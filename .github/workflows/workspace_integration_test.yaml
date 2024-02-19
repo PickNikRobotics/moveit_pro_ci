@@ -28,42 +28,42 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: 'true'
-#      # The lo interfaces will not have multicast, and will barf trying to claim a participant index
-#      # with the default cyclone dds config. We set one for the unit tests to be able to execute.
-#      - name: Configure DDS
-#        run: |
-#          cat <<EOF > /tmp/cyclonedds.xml
-#          <?xml version="1.0" ?>
-#          <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
-#            <Domain id="any">
-#              <Discovery>
-#                <ParticipantIndex>auto</ParticipantIndex>
-#                <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
-#              </Discovery>
-#            </Domain>
-#          </CycloneDDS>
-#          EOF
-#      - name: Install rosdeps
-#        run: |
-#          . /opt/ros/humble/setup.sh
-#          . /opt/underlay_ws/install/setup.sh
-#          . /opt/overlay_ws/install/setup.sh
-#          apt-get update
-#          rosdep update
-#          rosdep install --from-paths src --ignore-src -r -y
-#      - name: Run colcon build
-#        run: |
-#          . /opt/ros/humble/setup.sh
-#          . /opt/underlay_ws/install/setup.sh
-#          . /opt/overlay_ws/install/setup.sh
-#          colcon build
-#      - name: Run colcon test
-#        run: |
-#          . /opt/ros/humble/setup.sh
-#          . /opt/underlay_ws/install/setup.sh
-#          . /opt/overlay_ws/install/setup.sh
-#          . ./install/setup.sh
-#          colcon test
-#      - if: always()
-#        run: |
-#          colcon test-result --verbose
+      # The lo interfaces will not have multicast, and will barf trying to claim a participant index
+      # with the default cyclone dds config. We set one for the unit tests to be able to execute.
+      - name: Configure DDS
+        run: |
+          cat <<EOF > /tmp/cyclonedds.xml
+          <?xml version="1.0" ?>
+          <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+            <Domain id="any">
+              <Discovery>
+                <ParticipantIndex>auto</ParticipantIndex>
+                <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+              </Discovery>
+            </Domain>
+          </CycloneDDS>
+          EOF
+      - name: Install rosdeps
+        run: |
+          . /opt/ros/humble/setup.sh
+          . /opt/underlay_ws/install/setup.sh
+          . /opt/overlay_ws/install/setup.sh
+          apt-get update
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
+      - name: Run colcon build
+        run: |
+          . /opt/ros/humble/setup.sh
+          . /opt/underlay_ws/install/setup.sh
+          . /opt/overlay_ws/install/setup.sh
+          colcon build
+      - name: Run colcon test
+        run: |
+          . /opt/ros/humble/setup.sh
+          . /opt/underlay_ws/install/setup.sh
+          . /opt/overlay_ws/install/setup.sh
+          . ./install/setup.sh
+          colcon test
+      - if: always()
+        run: |
+          colcon test-result --verbose

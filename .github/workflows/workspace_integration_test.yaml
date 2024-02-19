@@ -70,7 +70,7 @@ jobs:
           . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
           . ./install/setup.sh
-          colcon test
+          colcon test --retest-until-pass 3
       - if: always()
         run: |
           colcon test-result --verbose

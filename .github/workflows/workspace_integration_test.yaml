@@ -1,0 +1,12 @@
+name: Reusable workflow for building Docker images
+
+on:
+  workflow_call:
+
+jobs:
+  job_name:
+    name: Any job name with
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hello World
+        run: echo "Hello World after"

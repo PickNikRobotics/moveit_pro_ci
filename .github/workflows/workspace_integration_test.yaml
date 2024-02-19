@@ -4,6 +4,14 @@ on:
   workflow_call:
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.dotenv.outputs.studio_docker_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: dotenv
+        uses: falti/dotenv-action@v1.0.4
   integration-test-in-studio-container:
     runs-on: ubuntu-latest
     env:

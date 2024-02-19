@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # The lo interfaces will not have multicast, and will barf trying to claim a participant index
+      # The 'lo' interfaces will not have multicast, and will fail trying to claim a participant index
       # with the default cyclone dds config. We set one for the unit tests to be able to execute.
       - name: Configure DDS
         run: |

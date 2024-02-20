@@ -78,3 +78,10 @@ jobs:
       - if: always()
         run: |
           colcon test-result --verbose
+      # Upload test results as artifacts to be able to see them in the github actions UI
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: build/*/test_results/*/*.xml
+          retention-days: 15

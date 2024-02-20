@@ -5,6 +5,9 @@ on:
     inputs:
       image_tag:
         type: string
+      config_package:
+        type: string
+        default: picknik_ur_mock_hw_config
     secrets:
       studio_license_key:
         required: false
@@ -34,6 +37,8 @@ jobs:
       ROS_LOCALHOST_ONLY: 1
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       CYCLONEDDS_URI: /tmp/cyclonedds.xml
+      # We always need to test in mocked hardware
+      STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container: picknikciuser/moveit-studio:${{ needs.setup.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4

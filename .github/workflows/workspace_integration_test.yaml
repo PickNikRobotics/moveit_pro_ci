@@ -13,7 +13,7 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      #We return the image_tag input of the workflow_call or the dotenv action if it is not provided
+      # We return the image_tag input of the workflow_call or the dotenv action if it is not provided
       image_tag: ${{ github.event.inputs.image_tag || steps.dotenv.outputs.studio_docker_tag }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       STUDIO_LICENSE_KEY: ${{ secrets.studio_license_key || secrets.STUDIO_CI_LICENSE_KEY }}
-      # TODO this variable is required but github workspace is different
+      # TODO Remove hardcoded path and replace with github.workspace when the bug is fixed
+      # We need to point USER_WS to the github workspace but the one mounted in the container.
+      # Currently, github variables has a bug of inconsistent
+      # with the variables github.workspace and runner.workspace paths
       # see https://github.com/actions/runner/issues/2058
       USER_WS: /github/workspace
       ROS_DOMAIN_ID: 49

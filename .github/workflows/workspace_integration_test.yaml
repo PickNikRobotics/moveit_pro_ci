@@ -34,8 +34,6 @@ jobs:
       ROS_LOCALHOST_ONLY: 1
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       CYCLONEDDS_URI: /tmp/cyclonedds.xml
-    # TODO: docker tag
-    # TODO: example for custom base images
     container: picknikciuser/moveit-studio:${{ needs.setup.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4

@@ -83,5 +83,7 @@ jobs:
         if: always()
         with:
           name: test-results
-          path: build/*/test_results/*/*.xml
+          path: |
+            build/*/test_results/
+            build/*/Testing/
           retention-days: 15

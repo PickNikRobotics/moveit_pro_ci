@@ -8,6 +8,9 @@ on:
       config_package:
         type: string
         default: picknik_ur_mock_hw_config
+      colcon_test_args:
+        type: string
+        default: ""
     secrets:
       studio_license_key:
         required: false
@@ -79,7 +82,7 @@ jobs:
           . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
           . ./install/setup.sh
-          colcon test --retest-until-pass 3
+          colcon test --retest-until-pass 3 ${{ inputs.colcon_test_args }}
       - if: always()
         run: |
           colcon test-result --verbose

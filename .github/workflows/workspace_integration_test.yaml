@@ -40,10 +40,18 @@ jobs:
       ROS_LOCALHOST_ONLY: 1
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       CYCLONEDDS_URI: /tmp/cyclonedds.xml
+      STUDIO_DOCKER_TAG: ${{ needs.setup.outputs.image_tag }}
       # We always need to test in mocked hardware
       STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container: picknikciuser/moveit-studio:${{ needs.setup.outputs.image_tag }}
     steps:
+      - name: License key exists
+        run: |
+          if [ -z "$STUDIO_LICENSE_KEY" ]; then
+            echo "STUDIO_CI_LICENSE_KEY is not set in the repository secrets"
+            echo "ERROR: Please set the STUDIO_LICENSE_KEY secret in the repository settings" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -97,5 +105,3 @@ jobs:
             build/*/test_results/
             build/*/Testing/
           retention-days: 15
-
-

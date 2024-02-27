@@ -1,12 +1,107 @@
-name: Reusable workflow for building Docker images
+name: Workspace Integration Test
 
 on:
   workflow_call:
+    inputs:
+      image_tag:
+        type: string
+      config_package:
+        type: string
+        default: picknik_ur_mock_hw_config
+      colcon_test_args:
+        type: string
+        default: ""
+    secrets:
+      studio_license_key:
+        required: false
 
 jobs:
-  job_name:
-    name: Any job name with
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      # We return the image_tag input of the workflow_call or the dotenv action if it is not provided
+      image_tag: ${{ github.event.inputs.image_tag || steps.dotenv.outputs.studio_docker_tag }}
     steps:
-      - name: Hello World
-        run: echo "Hello World after"
+      - uses: actions/checkout@v4
+      - id: dotenv
+        uses: falti/dotenv-action@v1.0.4
+  integration-test-in-studio-container:
+    needs: setup
+    runs-on: ubuntu-latest
+    env:
+      STUDIO_LICENSE_KEY: ${{ secrets.studio_license_key || secrets.STUDIO_CI_LICENSE_KEY }}
+      # TODO Remove hardcoded path and replace with github.workspace when the bug is fixed
+      # We need to point USER_WS to the github workspace but the one mounted in the container.
+      # Currently, github variables has a bug of inconsistent
+      # with the variables github.workspace and runner.workspace paths
+      # see https://github.com/actions/runner/issues/2058
+      USER_WS: /github/workspace
+      ROS_DOMAIN_ID: 49
+      ROS_LOCALHOST_ONLY: 1
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: /tmp/cyclonedds.xml
+      STUDIO_DOCKER_TAG: ${{ needs.setup.outputs.image_tag }}
+      # We always need to test in mocked hardware
+      STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
+    container: picknikciuser/moveit-studio:${{ needs.setup.outputs.image_tag }}
+    steps:
+      - name: License key exists
+        run: |
+          if [ -z "$STUDIO_LICENSE_KEY" ]; then
+            echo "STUDIO_CI_LICENSE_KEY is not set in the repository secrets"
+            echo "ERROR: Please set the STUDIO_LICENSE_KEY secret in the repository settings" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The 'lo' interfaces will not have multicast, and will fail trying to claim a participant index
+      # with the default cyclone dds config. We set one for the unit tests to be able to execute.
+      - name: Configure DDS
+        run: |
+          cat <<EOF > /tmp/cyclonedds.xml
+          <?xml version="1.0" ?>
+          <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+            <Domain id="any">
+              <Discovery>
+                <ParticipantIndex>auto</ParticipantIndex>
+                <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+              </Discovery>
+            </Domain>
+          </CycloneDDS>
+          EOF
+      - name: Install rosdeps
+        run: |
+          . /opt/ros/humble/setup.sh
+          . /opt/underlay_ws/install/setup.sh
+          . /opt/overlay_ws/install/setup.sh
+          apt-get update
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
+      - name: Run colcon build
+        run: |
+          . /opt/ros/humble/setup.sh
+          . /opt/underlay_ws/install/setup.sh
+          . /opt/overlay_ws/install/setup.sh
+          colcon build
+      - name: Run colcon test
+        run: |
+          . /opt/ros/humble/setup.sh
+          . /opt/underlay_ws/install/setup.sh
+          . /opt/overlay_ws/install/setup.sh
+          . ./install/setup.sh
+          echo "Running colcon test with STUDIO_CONFIG_PACKAGE: $STUDIO_CONFIG_PACKAGE"
+          env
+          colcon test --retest-until-pass 3 ${{ inputs.colcon_test_args }}
+      - if: always()
+        run: |
+          colcon test-result --verbose
+      # Upload test results as artifacts to be able to see them in the github actions UI
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            build/*/test_results/
+            build/*/Testing/
+          retention-days: 15

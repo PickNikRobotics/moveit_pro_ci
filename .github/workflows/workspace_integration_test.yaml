@@ -8,6 +8,9 @@ on:
       config_package:
         type: string
         default: picknik_ur_mock_hw_config
+      colcon_build_args:
+        type: string
+        default: ""
       colcon_test_args:
         type: string
         default: ""
@@ -70,6 +73,12 @@ jobs:
             </Domain>
           </CycloneDDS>
           EOF
+      - name: Install colcon mixins
+        run: |
+          colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml
+          colcon mixin update
+          colcon metadata add default https://raw.githubusercontent.com/colcon/colcon-metadata-repository/master/index.yaml
+          colcon metadata update
       - name: Install rosdeps
         run: |
           . /opt/ros/humble/setup.sh
@@ -83,7 +92,7 @@ jobs:
           . /opt/ros/humble/setup.sh
           . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
-          colcon build
+          colcon build ${{ inputs.colcon_build_args }}
       - name: Run colcon test
         run: |
           . /opt/ros/humble/setup.sh

@@ -73,6 +73,12 @@ jobs:
             </Domain>
           </CycloneDDS>
           EOF
+      - name: Install colcon mixins
+        run: |
+          colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml
+          colcon mixin update
+          colcon metadata add default
+          colcon metadata update
       - name: Install rosdeps
         run: |
           . /opt/ros/humble/setup.sh

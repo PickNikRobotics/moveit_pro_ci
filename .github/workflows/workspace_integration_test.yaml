@@ -5,6 +5,7 @@ on:
     inputs:
       image_tag:
         type: string
+        default: main
       config_package:
         type: string
         default: picknik_ur_mock_hw_config
@@ -22,12 +23,10 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      # We return the image_tag input of the workflow_call or the dotenv action if it is not provided
-      image_tag: ${{ github.event.inputs.image_tag || steps.dotenv.outputs.studio_docker_tag }}
+      # We return the main image_tag since we can no longer get it from the deprecated .env file
+      image_tag: main
     steps:
       - uses: actions/checkout@v4
-      - id: dotenv
-        uses: falti/dotenv-action@v1.0.4
   integration-test-in-studio-container:
     needs: setup
     runs-on: ubuntu-latest

@@ -23,7 +23,7 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      # We return the image_tag input of the workflow_call or the dotenv action if it is not provided
+      # We return the main image_tag since we can no longer get it from the deprecated .env file
       image_tag: main
     steps:
       - uses: actions/checkout@v4

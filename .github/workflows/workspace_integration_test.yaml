@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       # We return the image_tag input of the workflow_call or the dotenv action if it is not provided
-      image_tag: ${{ inputs.image_tag }}
+      image_tag: main
     steps:
       - uses: actions/checkout@v4
   integration-test-in-studio-container:

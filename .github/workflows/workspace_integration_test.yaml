@@ -32,12 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       STUDIO_LICENSE_KEY: ${{ secrets.studio_license_key || secrets.STUDIO_CI_LICENSE_KEY }}
-      # TODO Remove hardcoded path and replace with github.workspace when the bug is fixed
-      # We need to point USER_WS to the github workspace but the one mounted in the container.
-      # Currently, github variables has a bug of inconsistent
-      # with the variables github.workspace and runner.workspace paths
-      # see https://github.com/actions/runner/issues/2058
-      USER_WS: /github/workspace
       ROS_DOMAIN_ID: 49
       ROS_LOCALHOST_ONLY: 1
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
@@ -47,6 +41,9 @@ jobs:
       STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container: picknikciuser/moveit-studio:${{ needs.setup.outputs.image_tag }}
     steps:
+      - name: Set USER_WS environment variable
+        id: set_user_ws
+        run: echo "USER_WS=/__w/$(basename ${{ github.repository }})/$(basename ${{ github.repository }})" >> $GITHUB_ENV
       - name: License key exists
         run: |
           if [ -z "$STUDIO_LICENSE_KEY" ]; then

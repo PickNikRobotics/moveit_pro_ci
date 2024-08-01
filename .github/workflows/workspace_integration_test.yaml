@@ -37,7 +37,7 @@ jobs:
       # Currently, github variables has a bug of inconsistent
       # with the variables github.workspace and runner.workspace paths
       # see https://github.com/actions/runner/issues/2058
-      USER_WS: /github/workspace
+      USER_WS: /__w/${{ env.GITHUB_REPOSITORY }}/${{ env.GITHUB_REPOSITORY }}
       ROS_DOMAIN_ID: 49
       ROS_LOCALHOST_ONLY: 1
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp

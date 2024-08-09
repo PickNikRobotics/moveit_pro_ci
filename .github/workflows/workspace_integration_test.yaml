@@ -75,6 +75,9 @@ jobs:
           colcon mixin update
           colcon metadata add default https://raw.githubusercontent.com/colcon/colcon-metadata-repository/master/index.yaml
           colcon metadata update
+          cp $USER_WS/colcon-defaults.yaml ~/.colcon/defaults.yaml
+          echo "Using ~/.colcon/defaults.yaml:"
+          cat ~/.colcon/defaults.yaml
       - name: Install rosdeps
         run: |
           . /opt/ros/humble/setup.sh

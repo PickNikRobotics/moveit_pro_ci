@@ -101,7 +101,7 @@ jobs:
           echo "Running colcon test with STUDIO_CONFIG_PACKAGE: $STUDIO_CONFIG_PACKAGE"
           env
           # Create virtual framebuffer to allow GLFW to render in MuJoCo tests
-          Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+          Xvfb :99 -screen 0 1024x768x24 &
           colcon test --retest-until-pass 3 ${{ inputs.colcon_test_args }}
       - if: always()
         run: |

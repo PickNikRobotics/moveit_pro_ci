@@ -102,6 +102,7 @@ jobs:
           env
           # Create virtual framebuffer to allow GLFW to render in MuJoCo tests
           echo "Creating virtual framebuffer"
+          unset MUJOCO_GL
           Xvfb :99 -screen 0 1024x768x24 &
           echo "Sleeping 5s"
           sleep 5

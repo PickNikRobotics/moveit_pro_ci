@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       # We return the main image_tag since we can no longer get it from the deprecated .env file
-      image_tag: main
+      image_tag: ${{ inputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
   integration-test-in-studio-container:
@@ -36,10 +36,10 @@ jobs:
       ROS_LOCALHOST_ONLY: 1
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       CYCLONEDDS_URI: /tmp/cyclonedds.xml
-      STUDIO_DOCKER_TAG: ${{ needs.setup.outputs.image_tag }}
+      STUDIO_DOCKER_TAG: ${{ inputs.image_tag }}
       # We always need to test in mocked hardware
       STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
-    container: picknikciuser/moveit-studio:${{ needs.setup.outputs.image_tag }}
+    container: picknikciuser/moveit-studio:${{ inputs.image_tag }}
     steps:
       - name: Set USER_WS environment variable
         id: set_user_ws

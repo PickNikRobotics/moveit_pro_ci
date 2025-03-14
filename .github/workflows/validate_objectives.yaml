@@ -1,0 +1,19 @@
+name: Validate Objectives
+
+on:
+    workflow_call:
+
+jobs:
+    validate-objectives:
+        name: Validate objectives
+        runs-on: ubuntu-22.04
+        steps:
+            - uses: actions/checkout@v3
+            - name: Set GitHub Path
+              run: echo "$GITHUB_ACTION_PATH" >> $GITHUB_PATH
+              shell: bash
+              env:
+                  GITHUB_ACTION_PATH: ${{ github.action_path }}
+            - name: Validate objectives
+              run: |
+                  validate_objectives.py

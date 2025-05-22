@@ -112,7 +112,7 @@ jobs:
           export DISPLAY=:99
           Xvfb :99 -screen 0 1024x768x24 &
           echo "Running colcon test"
-          colcon test --retest-until-pass 3 ${{ inputs.colcon_test_args }}
+          colcon test --retest-until-pass 1 ${{ inputs.colcon_test_args }}
       - if: always()
         run: |
           colcon test-result --verbose

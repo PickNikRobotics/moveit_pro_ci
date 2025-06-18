@@ -8,7 +8,7 @@ on:
         default: main
       config_package:
         type: string
-        default: lab_sim
+        default: ""
       colcon_build_args:
         type: string
         default: ""
@@ -38,6 +38,19 @@ jobs:
       STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container: picknikciuser/moveit-studio:${{ inputs.image_tag }}
     steps:
+      - name: Check if config package specified
+        id: check_config_package
+        run: |
+          if [ -z "${{ inputs.config_package }}" ]; then
+            echo "No config package specified, building all packages"
+            echo "config_package_test_arg=" >> $GITHUB_OUTPUT
+            echo "config_package_build_arg=" >> $GITHUB_OUTPUT
+          else
+            echo "Using specified config package: ${{ inputs.config_package }}"
+            echo "config_package_test_arg=--packages-select ${{ inputs.config_package }}" >> $GITHUB_OUTPUT
+            echo "config_package_build_arg=--packages-up-to ${{ inputs.config_package }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set USER_WS environment variable
         id: set_user_ws
         run: echo "USER_WS=/__w/$(basename ${{ github.repository }})/$(basename ${{ github.repository }})" >> $GITHUB_ENV
@@ -98,21 +111,20 @@ jobs:
           . /opt/ros/humble/setup.sh
           . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
-          colcon build ${{ inputs.colcon_build_args }}
+          colcon build ${{ inputs.colcon_build_args }} ${{ steps.check_config_package.outputs.config_package_build_arg }}
       - name: Run colcon test
         run: |
           . /opt/ros/humble/setup.sh
           . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
           . ./install/setup.sh
-          echo "Running colcon test with STUDIO_CONFIG_PACKAGE: $STUDIO_CONFIG_PACKAGE"
           env
           # Create virtual framebuffer to allow GLFW to render in MuJoCo tests
           unset MUJOCO_GL
           export DISPLAY=:99
           Xvfb :99 -screen 0 1024x768x24 &
           echo "Running colcon test"
-          colcon test --retest-until-pass 1 ${{ inputs.colcon_test_args }}
+          colcon test --retest-until-pass 1 ${{ inputs.colcon_test_args }} ${{ steps.check_config_package.outputs.config_package_test_arg }}
       - if: always()
         run: |
           colcon test-result --verbose
@@ -120,7 +132,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ inputs.config_package }}
           path: |
             build/*/test_results/
             build/*/Testing/

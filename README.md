@@ -33,4 +33,5 @@ All input args:
   - Note: we recommend creating branch names that match the MoveIt Pro container image tags, such as `8.1.0`, `8.2.0`, etc for your versioned out production robot applications.
 - `config_package`: The name of the MoveIt Pro config package to test. This is only required when using a matrix to run tests in parallel.
 - `colcon_build_args`: Additional colcon arguments to pass to the `colcon build` command.
--` colcon_test_args`: Additional colcon arguments to pass to the `colcon test` command.
+- `colcon_test_args`: Additional colcon arguments to pass to the `colcon test` command.
+- `runner`: A runner to be passed and run the integration tests.

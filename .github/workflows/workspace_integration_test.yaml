@@ -15,6 +15,10 @@ on:
       colcon_test_args:
         type: string
         default: ""
+      runner:
+        type: string
+        default: "studio_16_core_runner"
+
     secrets:
       studio_license_key:
         required: false
@@ -28,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
   integration-test-in-studio-container:
     needs: setup
-    runs-on: studio_16_core_runner
+    runs-on: ${{ inputs.runner }}
     env:
       STUDIO_LICENSE_KEY: ${{ secrets.studio_license_key || secrets.STUDIO_CI_LICENSE_KEY }}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp

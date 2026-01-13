@@ -20,8 +20,8 @@ on:
         default: "studio_16_core_runner"
 
     secrets:
-      studio_license_key:
-        required: false
+      moveit_license_key:
+        required: true
 
 jobs:
   setup:
@@ -34,12 +34,12 @@ jobs:
     needs: setup
     runs-on: ${{ inputs.runner }}
     env:
-      STUDIO_LICENSE_KEY: ${{ secrets.studio_license_key || secrets.STUDIO_CI_LICENSE_KEY }}
+      MOVEIT_LICENSE_KEY: ${{ secrets.moveit_license_key }}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       CYCLONEDDS_URI: /tmp/cyclonedds.xml
-      STUDIO_DOCKER_TAG: ${{ inputs.image_tag }}
+      MOVEIT_DOCKER_TAG: ${{ inputs.image_tag }}
       # We always need to test in mocked hardware
-      STUDIO_CONFIG_PACKAGE: ${{ inputs.config_package }}
+      MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container: picknikciuser/moveit-studio:${{ inputs.image_tag }}
     steps:
       - name: Check if config package specified
@@ -58,13 +58,6 @@ jobs:
       - name: Set USER_WS environment variable
         id: set_user_ws
         run: echo "USER_WS=/__w/$(basename ${{ github.repository }})/$(basename ${{ github.repository }})" >> $GITHUB_ENV
-      - name: License key exists
-        run: |
-          if [ -z "$STUDIO_LICENSE_KEY" ]; then
-            echo "STUDIO_CI_LICENSE_KEY is not set in the repository secrets"
-            echo "ERROR: Please set the STUDIO_LICENSE_KEY secret in the repository settings" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
       - uses: actions/checkout@v4
         with:
           submodules: recursive

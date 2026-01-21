@@ -41,6 +41,9 @@ jobs:
       # We always need to test in mocked hardware
       MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container: picknikciuser/moveit-studio:${{ inputs.image_tag }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check if config package specified
         id: check_config_package
@@ -110,9 +113,6 @@ jobs:
           . /opt/overlay_ws/install/setup.sh
           colcon build ${{ inputs.colcon_build_args }} ${{ steps.check_config_package.outputs.config_package_build_arg }}
       - name: Run colcon test
-        defaults:
-          run:
-            shell: bash
         run: |
           . /opt/ros/humble/setup.sh
           . /opt/underlay_ws/install/setup.sh

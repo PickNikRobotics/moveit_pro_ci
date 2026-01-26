@@ -33,14 +33,18 @@ jobs:
   integration-test-in-studio-container:
     needs: setup
     runs-on: ${{ inputs.runner }}
+    strategy:
+      matrix:
+        ros_distro:
+          - humble
     env:
       MOVEIT_LICENSE_KEY: ${{ secrets.moveit_license_key }}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       CYCLONEDDS_URI: /tmp/cyclonedds.xml
-      MOVEIT_DOCKER_TAG: ${{ inputs.image_tag }}
+      MOVEIT_DOCKER_TAG: ${{ inputs.image_tag }}-${{ matrix.ros_distro }}
       # We always need to test in mocked hardware
       MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
-    container: picknikciuser/moveit-studio:${{ inputs.image_tag }}
+    container: picknikciuser/moveit-studio:${{ inputs.image_tag }}-${{ matrix.ros_distro }}
     defaults:
       run:
         shell: bash

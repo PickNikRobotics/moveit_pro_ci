@@ -105,7 +105,6 @@ jobs:
       - name: Install rosdeps
         run: |
           . /opt/ros/humble/setup.sh
-          . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
           apt-get update
           rosdep update
@@ -113,13 +112,11 @@ jobs:
       - name: Run colcon build
         run: |
           . /opt/ros/humble/setup.sh
-          . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
           colcon build ${{ inputs.colcon_build_args }} ${{ steps.check_config_package.outputs.config_package_build_arg }}
       - name: Run colcon test
         run: |
           . /opt/ros/humble/setup.sh
-          . /opt/underlay_ws/install/setup.sh
           . /opt/overlay_ws/install/setup.sh
           . ./install/setup.sh
           env

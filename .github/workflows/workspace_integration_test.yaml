@@ -17,21 +17,14 @@ on:
         default: ""
       runner:
         type: string
-        default: "studio_16_core_runner"
+        default: "depot-ubuntu-24.04-16"
 
     secrets:
       moveit_license_key:
         required: true
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ inputs.image_tag }}
-    steps:
-      - uses: actions/checkout@v4
   integration-test-in-studio-container:
-    needs: setup
     runs-on: ${{ inputs.runner }}
     strategy:
       matrix:
@@ -65,7 +58,7 @@ jobs:
       - name: Set USER_WS environment variable
         id: set_user_ws
         run: echo "USER_WS=/__w/$(basename ${{ github.repository }})/$(basename ${{ github.repository }})" >> $GITHUB_ENV
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: recursive
           lfs: true

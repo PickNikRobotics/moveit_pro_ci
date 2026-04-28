@@ -24,14 +24,7 @@ on:
         required: true
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ inputs.image_tag }}
-    steps:
-      - uses: actions/checkout@v4
   integration-test-in-studio-container:
-    needs: setup
     runs-on: ${{ inputs.runner }}
     strategy:
       matrix:
@@ -65,10 +58,12 @@ jobs:
       - name: Set USER_WS environment variable
         id: set_user_ws
         run: echo "USER_WS=/__w/$(basename ${{ github.repository }})/$(basename ${{ github.repository }})" >> $GITHUB_ENV
-      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           lfs: true
+
       # The 'lo' interfaces will not have multicast, and will fail trying to claim a participant index
       # with the default cyclone dds config. We set one for the unit tests to be able to execute.
       - name: Configure DDS
@@ -93,6 +88,7 @@ jobs:
            </Domain>
           </CycloneDDS>
           EOF
+
       - name: Install colcon mixins
         run: |
           colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml
@@ -102,6 +98,7 @@ jobs:
           cp $USER_WS/colcon-defaults.yaml ~/.colcon/defaults.yaml
           echo "Using ~/.colcon/defaults.yaml:"
           cat ~/.colcon/defaults.yaml
+
       - name: Install rosdeps
         run: |
           . /opt/ros/humble/setup.sh
@@ -109,21 +106,19 @@ jobs:
           apt-get update
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
+
       - name: Run colcon build
         run: |
           . /opt/ros/humble/setup.sh
           . /opt/overlay_ws/install/setup.sh
           colcon build ${{ inputs.colcon_build_args }} ${{ steps.check_config_package.outputs.config_package_build_arg }}
+
       - name: Run colcon test
         run: |
           . /opt/ros/humble/setup.sh
           . /opt/overlay_ws/install/setup.sh
           . ./install/setup.sh
           env
-          # Create virtual framebuffer to allow GLFW to render in MuJoCo tests
-          unset MUJOCO_GL
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1024x768x24 &
           echo "Running colcon test"
           external_packages="$(colcon list --base-paths src/external_dependencies --names-only || true)"
           if [ -n "$external_packages" ]; then
@@ -131,11 +126,13 @@ jobs:
           else
               colcon test --retest-until-pass 1 ${{ inputs.colcon_test_args }} ${{ steps.check_config_package.outputs.config_package_test_arg }}
           fi
+
       - if: always()
         run: |
           colcon test-result --verbose
+
       # Upload test results as artifacts to be able to see them in the github actions UI
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: test-results-${{ inputs.config_package }}

@@ -101,10 +101,11 @@ jobs:
               if not mujoco_root.search(text):
                   continue
               # Strip any existing `timestep="..."` attribute on <option> elements first
+              # allowing XML-valid whitespace around `=` and either quote style,
               # so a later <option timestep="..."> cannot override the injected CI
               # timestep when MuJoCo merges <option> attributes across elements (last wins).
               stripped = re.sub(
-                  r'(<option\b[^>]*?)\s+timestep="[^"]*"',
+                  r"""(<option\b[^>]*?)\s+timestep\s*=\s*(?:"[^"]*"|'[^']*')""",
                   r'\1',
                   text,
               )

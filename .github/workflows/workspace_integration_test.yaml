@@ -26,6 +26,13 @@ on:
           runs. Suggested: "0.004" (250 Hz).
         type: string
         default: ""
+      use_ccache:
+        description: >
+          If true, use ccache to speed up the colcon build. The ccache directory is
+          restored from and saved to the GitHub Actions cache, and
+          `CMAKE_{C,CXX}_COMPILER_LAUNCHER` is set to `ccache` for the build step.
+        type: boolean
+        default: false
 
     secrets:
       moveit_license_key:
@@ -173,11 +180,60 @@ jobs:
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
 
+      - name: Restore ccache
+        if: inputs.use_ccache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ inputs.image_tag }}-${{ matrix.ros_distro }}-${{ inputs.config_package }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ inputs.image_tag }}-${{ matrix.ros_distro }}-${{ inputs.config_package }}-
+            ccache-${{ inputs.image_tag }}-${{ matrix.ros_distro }}-
+
+      - name: Configure ccache
+        if: inputs.use_ccache
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          if ! command -v ccache >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends ccache
+          fi
+          mkdir -p "$CCACHE_DIR"
+          ccache --set-config=max_size=5G
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          ccache --show-config
+
       - name: Run colcon build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           . /opt/ros/humble/setup.sh
           . /opt/overlay_ws/install/setup.sh
-          colcon build ${{ inputs.colcon_build_args }} ${{ steps.check_config_package.outputs.config_package_build_arg }}
+          # When ccache is enabled, pass the compiler-launcher defines via
+          # `colcon build --cmake-args` rather than via env vars: it is explicit,
+          # works regardless of build-tree state, and avoids setting empty
+          # `CMAKE_{C,CXX}_COMPILER_LAUNCHER` env values that could override a
+          # caller-provided launcher when `use_ccache` is false.
+          ccache_cmake_args=""
+          if [ "${{ inputs.use_ccache }}" = "true" ]; then
+            ccache_cmake_args="--cmake-args -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          fi
+          colcon build ${{ inputs.colcon_build_args }} ${{ steps.check_config_package.outputs.config_package_build_arg }} $ccache_cmake_args
+
+      - name: Show ccache stats
+        if: inputs.use_ccache && always()
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: ccache --show-stats --verbose
+
+      - name: Save ccache
+        if: inputs.use_ccache && always()
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ inputs.image_tag }}-${{ matrix.ros_distro }}-${{ inputs.config_package }}-${{ github.sha }}
 
       - name: Run colcon test
         run: |

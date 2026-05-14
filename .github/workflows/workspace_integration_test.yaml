@@ -42,9 +42,11 @@ jobs:
   integration-test-in-studio-container:
     runs-on: ${{ inputs.runner }}
     strategy:
+      fail-fast: false
       matrix:
         ros_distro:
           - humble
+          - jazzy
     env:
       MOVEIT_LICENSE_KEY: ${{ secrets.moveit_license_key }}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp

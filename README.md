@@ -16,7 +16,7 @@ To test packages in your workspace **in parallel** in a container, you can utili
 ```yaml
 jobs:
   integration-test-in-studio-container:
-    uses: PickNikRobotics/moveit_pro_ci/.github/workflows/workspace_integration_test.yaml@fix-artifact-upload
+    uses: PickNikRobotics/moveit_pro_ci/.github/workflows/workspace_integration_test.yaml@<version-chosen>
     strategy:
       fail-fast: false
       matrix:
@@ -29,9 +29,23 @@ jobs:
   ```
 
 All input args:
-- `image_tag`: The tag of the MoveIt Pro container image to use for the job. This can be set to the branch name or a specific tag version (example: 8.1.0).
+- `image_tag`: The tag of the MoveIt Pro container image to use for the job. This can be set to the branch name or a specific tag version (example: 8.1.0). The ROS distro is automatically appended to this tag (see [Supported ROS Distributions](#supported-ros-distributions) below), so the image actually pulled is `picknikciuser/moveit-studio:<image_tag>-<ros_distro>`.
   - Note: we recommend creating branch names that match the MoveIt Pro container image tags, such as `8.1.0`, `8.2.0`, etc for your versioned out production robot applications.
-- `config_package`: The name of the MoveIt Pro config package to test. This is only required when using a matrix to run tests in parallel.
-- `colcon_build_args`: Additional colcon arguments to pass to the `colcon build` command.
-- `colcon_test_args`: Additional colcon arguments to pass to the `colcon test` command.
-- `runner`: A runner to be passed and run the integration tests.
+- `config_package`: The name of the MoveIt Pro config package to test. This is only required when using a matrix to run tests in parallel. Default: `""` (build/test all packages).
+- `colcon_build_args`: Additional colcon arguments to pass to the `colcon build` command. Default: `""`.
+- `colcon_test_args`: Additional colcon arguments to pass to the `colcon test` command. Default: `""`.
+- `runner`: A runner to be passed and run the integration tests. Default: `studio_16_core_runner`.
+- `mujoco_ci_timestep`: If non-empty, set the MuJoCo `<option timestep>` to this value (in seconds) on every top-level `<mujoco>` scene file under `src/` before build. Used to keep the simulator at-or-under realtime on slower CI runners; leave empty for normal runs. Suggested: `"0.004"` (250 Hz). Default: `""`.
+- `use_ccache`: If `true`, use ccache to speed up the colcon build. The ccache directory is restored from and saved to the GitHub Actions cache (keyed by image tag, ROS distro, and config package), and `CMAKE_{C,CXX}_COMPILER_LAUNCHER` is set to `ccache` for the build step. Default: `false`.
+
+Required secrets:
+- `moveit_license_key`: The MoveIt Pro license key. Passing `secrets: inherit` (as in the examples above) is the easiest way to forward it from the calling workflow.
+
+## Supported ROS Distributions
+
+The reusable workflow runs each job once per supported ROS distro via a matrix. Currently supported:
+
+- **Humble** (`humble`)
+- **Jazzy** (`jazzy`)
+
+For each distro, the workflow pulls `picknikciuser/moveit-studio:<image_tag>-<ros_distro>`. MoveIt Pro began supporting ROS Jazzy in 9.2.0. Jobs for each distro run in parallel and are reported as separate matrix entries in the GitHub Actions UI.

@@ -176,7 +176,7 @@ jobs:
 
       - name: Install rosdeps
         run: |
-          . /opt/ros/humble/setup.sh
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           . /opt/overlay_ws/install/setup.sh
           apt-get update
           rosdep update
@@ -211,7 +211,7 @@ jobs:
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
-          . /opt/ros/humble/setup.sh
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           . /opt/overlay_ws/install/setup.sh
           # When ccache is enabled, pass the compiler-launcher defines via
           # `colcon build --cmake-args` rather than via env vars: it is explicit,
@@ -239,7 +239,7 @@ jobs:
 
       - name: Run colcon test
         run: |
-          . /opt/ros/humble/setup.sh
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
           . /opt/overlay_ws/install/setup.sh
           . ./install/setup.sh
           env

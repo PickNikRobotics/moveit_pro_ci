@@ -49,3 +49,16 @@ The reusable workflow runs each job once per supported ROS distro via a matrix. 
 - **Jazzy** (`jazzy`)
 
 For each distro, the workflow pulls `picknikciuser/moveit-studio:<image_tag>-<ros_distro>`. MoveIt Pro began supporting ROS Jazzy in 9.2.0. Jobs for each distro run in parallel and are reported as separate matrix entries in the GitHub Actions UI.
+
+## Reusable Actions
+
+### `find_release_branch`
+Composite action that lists the calling repository's branches and outputs the highest `v<major>.<minor>` branch name (e.g. `v9.5`). Used by the `batch-merge-release-branch` workflows across MoveIt Pro repos to pick the active release branch to merge into `main`.
+```yaml
+- name: Get current release branch
+  id: get_current_release_branch
+  uses: PickNikRobotics/moveit_pro_ci/.github/actions/find_release_branch@<commit-sha>
+- name: Use it
+  run: echo "Release branch is ${{ steps.get_current_release_branch.outputs.branch }}"
+```
+Pin by commit SHA for reproducibility.

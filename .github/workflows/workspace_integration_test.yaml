@@ -37,8 +37,8 @@ on:
         description: >
           If true, pass `--gpus all` to the studio container so workloads inside
           it can access NVIDIA hardware. The caller is responsible for routing
-          the job to a GPU-equipped runner (e.g. `runner: picknik-16-amd64-gpu`);
-          this flag alone will fail on runners that have no GPU exposed.
+          the job to a GPU-equipped runner; this flag alone will fail on runners
+          that have no GPU exposed.
         type: boolean
         default: false
 

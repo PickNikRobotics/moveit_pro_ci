@@ -33,6 +33,14 @@ on:
           `CMAKE_{C,CXX}_COMPILER_LAUNCHER` is set to `ccache` for the build step.
         type: boolean
         default: false
+      enable_gpu:
+        description: >
+          If true, pass `--gpus all` to the studio container so workloads inside
+          it can access NVIDIA hardware. The caller is responsible for routing
+          the job to a GPU-equipped runner (e.g. `runner: picknik-16-amd64-gpu`);
+          this flag alone will fail on runners that have no GPU exposed.
+        type: boolean
+        default: false
 
     secrets:
       moveit_license_key:
@@ -54,7 +62,12 @@ jobs:
       MOVEIT_DOCKER_TAG: ${{ inputs.image_tag }}-${{ matrix.ros_distro }}
       # We always need to test in mocked hardware
       MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
-    container: picknikciuser/moveit-studio:${{ inputs.image_tag }}-${{ matrix.ros_distro }}
+    container:
+      image: picknikciuser/moveit-studio:${{ inputs.image_tag }}-${{ matrix.ros_distro }}
+      # GHA expressions support short-circuit: `cond && 'a' || 'b'`. Empty string
+      # when GPU is disabled is fine — GHA omits empty `options` from the
+      # `docker create` invocation.
+      options: ${{ inputs.enable_gpu && '--gpus all' || '' }}
     defaults:
       run:
         shell: bash

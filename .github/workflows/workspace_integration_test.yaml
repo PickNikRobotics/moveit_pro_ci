@@ -26,6 +26,17 @@ on:
           runs. Suggested: "0.004" (250 Hz).
         type: string
         default: ""
+      mujoco_ci_camera_resolution:
+        description: >
+          If non-empty, force every MuJoCo `<camera>` element under `src/` that already
+          has a `resolution="..."` attribute to this "WIDTH HEIGHT" value before build.
+          Used to cap per-frame render cost on slower CI runners; leave empty for normal
+          runs. The scene's `<global offwidth offheight>` is left untouched (it only needs
+          to be >= the largest camera, so shrinking cameras alone is sufficient). Cameras
+          without an existing `resolution=` attribute are left alone (typically URDF
+          cameras with non-MuJoCo syntax). Suggested: "640 480".
+        type: string
+        default: ""
       use_ccache:
         description: >
           If true, use ccache to speed up the colcon build. The ccache directory is
@@ -137,6 +148,53 @@ jobs:
           print(f"Patched {len(patched)} MuJoCo scene file(s) with timestep={ts}:")
           for p in patched:
               print(f"  {p}")
+          PY
+
+      # Bigger camera `resolution="W H"` values (e.g. 1280x720) multiply per-frame
+      # render cost and can push perception-heavy integration tests past their
+      # timeout on CI runners. When `mujoco_ci_camera_resolution` is set, rewrite
+      # every existing `<camera ... resolution="...">` attribute under `src/` to
+      # this value. Cameras without an existing `resolution=` attribute are left
+      # alone (typically URDF cameras with non-MuJoCo `<sensor>` syntax).
+      - name: Override MuJoCo camera resolution for CI
+        if: inputs.mujoco_ci_camera_resolution != ''
+        env:
+          MUJOCO_CI_CAMERA_RESOLUTION: ${{ inputs.mujoco_ci_camera_resolution }}
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+          res = os.environ['MUJOCO_CI_CAMERA_RESOLUTION'].strip()
+          m = re.fullmatch(r'(\d+)\s+(\d+)', res)
+          if not m or int(m.group(1)) <= 0 or int(m.group(2)) <= 0:
+              raise SystemExit(
+                  f"mujoco_ci_camera_resolution must be 'WIDTH HEIGHT' positive integers, got {res!r}"
+              )
+          res_norm = f"{m.group(1)} {m.group(2)}"
+          # Rewrite `resolution="..."` (or single-quoted) inside any <camera ...>
+          # start tag. `[^>]` excludes `>` (and includes newlines), so multi-line
+          # <camera> tags are handled without re.DOTALL.
+          attr = re.compile(
+              r"""(<camera\b[^>]*?\bresolution\s*=\s*)("[^"]*"|'[^']*')""",
+          )
+          patched = []
+          for path in pathlib.Path('src').rglob('*.xml'):
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except (UnicodeDecodeError, OSError):
+                  continue
+              new_text, n = attr.subn(rf'\1"{res_norm}"', text)
+              if n:
+                  path.write_text(new_text, encoding='utf-8')
+                  patched.append((str(path), n))
+          if not patched:
+              raise SystemExit(
+                  f"mujoco_ci_camera_resolution={res_norm} was set but no <camera> "
+                  "elements with a resolution attribute were found under src/. "
+                  "Refusing to proceed silently."
+              )
+          print(f"Patched cameras in {len(patched)} file(s) to resolution={res_norm!r}:")
+          for p, n in patched:
+              print(f"  {p} ({n} camera(s))")
           PY
 
       # The 'lo' interfaces will not have multicast, and will fail trying to claim a participant index

@@ -37,6 +37,7 @@ All input args:
 - `runner`: A runner to be passed and run the integration tests. Default: `studio_16_core_runner`.
 - `mujoco_ci_timestep`: If non-empty, set the MuJoCo `<option timestep>` to this value (in seconds) on every top-level `<mujoco>` scene file under `src/` before build. Used to keep the simulator at-or-under realtime on slower CI runners; leave empty for normal runs. Suggested: `"0.004"` (250 Hz). Default: `""`.
 - `use_ccache`: If `true`, use ccache to speed up the colcon build. The ccache directory is restored from and saved to the GitHub Actions cache (keyed by image tag, ROS distro, and config package), and `CMAKE_{C,CXX}_COMPILER_LAUNCHER` is set to `ccache` for the build step. Default: `false`.
+- `enable_gpu`: If `true`, pass `--gpus all` to the studio container so workloads inside it can access NVIDIA hardware (CUDA inference, GPU-accelerated simulation, etc.). The caller is responsible for routing the job to a GPU-equipped runner; setting `enable_gpu: true` on a runner with no GPU exposed will fail at container start with `could not select device driver "" with capabilities: [[gpu]]`. Default: `false`.
 
 Required secrets:
 - `moveit_license_key`: The MoveIt Pro license key. Passing `secrets: inherit` (as in the examples above) is the easiest way to forward it from the calling workflow.

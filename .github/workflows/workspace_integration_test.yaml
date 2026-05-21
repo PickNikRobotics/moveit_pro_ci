@@ -63,7 +63,9 @@ jobs:
       # We always need to test in mocked hardware
       MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container:
-      image: picknikciuser/moveit-studio:${{ inputs.image_tag }}-${{ matrix.ros_distro }}
+      # When `enable_gpu` is true, append the CUDA suffix so the runtime image
+      # matches the GPU-enabled MoveIt Pro build.
+      image: picknikciuser/moveit-studio:${{ inputs.image_tag }}-${{ matrix.ros_distro }}${{ inputs.enable_gpu && '-cuda12.6-cudnn9' || '' }}
       # GHA expressions support short-circuit: `cond && 'a' || 'b'`. Empty string
       # when GPU is disabled is fine — GHA omits empty `options` from the
       # `docker create` invocation.

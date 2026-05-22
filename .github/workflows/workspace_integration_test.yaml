@@ -270,11 +270,15 @@ jobs:
         run: |
           colcon test-result --verbose
 
-      # Upload test results as artifacts to be able to see them in the github actions UI
+      # Upload test results as artifacts to be able to see them in the github actions UI.
+      # Suffix with `matrix.ros_distro` so the humble and jazzy jobs don't both upload
+      # to the same artifact name -- which races on the GitHub Actions side and makes
+      # the per-distro results indistinguishable to downstream consumers
+      # (e.g. a consumer-side `actions/download-artifact` step rendering a report).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: test-results-${{ inputs.config_package }}
+          name: test-results-${{ inputs.config_package }}-${{ matrix.ros_distro }}
           path: |
             build/*/test_results/
             build/*/Testing/

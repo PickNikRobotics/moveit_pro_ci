@@ -41,6 +41,34 @@ on:
           that have no GPU exposed.
         type: boolean
         default: false
+      git_ref:
+        description: >
+          Git ref (branch, tag, or SHA) for the caller's repository to check
+          out. Defaults to empty, which lets `actions/checkout` use the
+          triggering ref (correct for `pull_request` and `push`). Set this
+          when the workflow is triggered by `repository_dispatch` and the
+          caller needs to run against a specific paired branch carried in
+          the dispatch payload (for example, `v9.3`).
+        type: string
+        default: ""
+      image_ref:
+        description: >
+          Full container image reference template that overrides the default
+          `picknikciuser/moveit-studio:<image_tag>-<ros_distro>` from Docker
+          Hub. Useful when a caller (typically a `repository_dispatch` from a
+          sister repo) needs the integration run to pull a private GHCR image
+          built for a specific PR.
+
+          Uses `format()` semantics: `{0}` is substituted with the matrix ROS
+          distro at job start, so one input covers every distro the matrix
+          expands over. Example:
+          `ghcr.io/picknikrobotics/moveit-studio:my-branch-{0}-amd64`.
+
+          When set, `enable_gpu`'s CUDA suffix is NOT auto-appended — bake the
+          full ref (including any suffix) into the template if you need a GPU
+          image.
+        type: string
+        default: ""
 
     secrets:
       moveit_license_key:
@@ -63,9 +91,12 @@ jobs:
       # We always need to test in mocked hardware
       MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
     container:
-      # When `enable_gpu` is true, append the CUDA suffix so the runtime image
-      # matches the GPU-enabled MoveIt Pro build.
-      image: picknikciuser/moveit-studio:${{ inputs.image_tag }}-${{ matrix.ros_distro }}${{ inputs.enable_gpu && '-cuda12.6-cudnn9' || '' }}
+      # When `image_ref` is set, format it with the matrix ROS distro and use
+      # it verbatim — this is the dispatched-from-sister-repo path that needs
+      # a private GHCR image. Otherwise fall back to the Docker Hub default
+      # used by every existing caller, appending the CUDA suffix when
+      # `enable_gpu` is set.
+      image: ${{ inputs.image_ref != '' && format(inputs.image_ref, matrix.ros_distro) || format('picknikciuser/moveit-studio:{0}-{1}{2}', inputs.image_tag, matrix.ros_distro, inputs.enable_gpu && '-cuda12.6-cudnn9' || '') }}
       # GHA expressions support short-circuit: `cond && 'a' || 'b'`. Empty string
       # when GPU is disabled is fine — GHA omits empty `options` from the
       # `docker create` invocation.
@@ -93,6 +124,8 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # Empty ``ref`` falls back to the default (triggering ref).
+          git_ref: ${{ inputs.git_ref }}
           submodules: recursive
           lfs: true
 

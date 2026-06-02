@@ -70,9 +70,36 @@ on:
         type: string
         default: ""
 
+      fetch_lfs:
+        description: >
+          Whether to fetch Git LFS objects during checkout. Set false to skip
+          LFS entirely for workspaces that do not use it. Ignored when
+          lfs_cache_s3_bucket is set (the cache path always fetches LFS).
+        type: boolean
+        default: true
+      lfs_cache_s3_bucket:
+        description: >
+          If set, fetch Git LFS objects through an S3-backed cache instead of a
+          direct pull: objects are restored from this bucket, any still-missing
+          ones are pulled from the Git remote, then the set is saved back. Leave
+          empty (default) for a normal direct LFS pull. Requires
+          lfs_cache_role_arn, and the calling job must grant `id-token: write`.
+        type: string
+        default: ""
+      lfs_cache_aws_region:
+        description: AWS region of lfs_cache_s3_bucket.
+        type: string
+        default: "us-east-1"
+
     secrets:
       moveit_license_key:
         required: true
+      lfs_cache_role_arn:
+        description: >
+          AWS IAM role ARN to assume via GitHub OIDC for read/write access to
+          lfs_cache_s3_bucket. Required when lfs_cache_s3_bucket is set. A secret
+          (not an input) so the ARN is not shown in run logs.
+        required: false
 
 jobs:
   integration-test-in-studio-container:
@@ -127,7 +154,62 @@ jobs:
           # Empty ``ref`` falls back to the default (triggering ref).
           git_ref: ${{ inputs.git_ref }}
           submodules: recursive
-          lfs: true
+          # Direct LFS pull only when fetching LFS and not using the S3 cache.
+          lfs: ${{ inputs.fetch_lfs && inputs.lfs_cache_s3_bucket == '' }}
+
+      # Optional S3-backed Git LFS cache. Inert unless lfs_cache_s3_bucket is
+      # set, so the default path is an unchanged direct checkout. The calling
+      # job must grant `id-token: write` to use this.
+      - name: Validate LFS cache configuration
+        if: ${{ inputs.lfs_cache_s3_bucket != '' }}
+        env:
+          ROLE_ARN: ${{ secrets.lfs_cache_role_arn }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::lfs_cache_s3_bucket is set but the lfs_cache_role_arn secret is empty."
+            exit 1
+          fi
+          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            echo "::error::lfs_cache_s3_bucket is set but the calling job did not grant 'id-token: write'."
+            exit 1
+          fi
+      - name: Configure AWS credentials for LFS cache
+        if: ${{ inputs.lfs_cache_s3_bucket != '' }}
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        with:
+          role-to-assume: ${{ secrets.lfs_cache_role_arn }}
+          aws-region: ${{ inputs.lfs_cache_aws_region }}
+      - name: Compute LFS cache key
+        if: ${{ inputs.lfs_cache_s3_bucket != '' }}
+        id: lfs_cache_key
+        run: |
+          set -o pipefail
+          echo "key=lfs-${{ github.repository_id }}-$(git lfs ls-files -l | sha256sum | cut -c1-32)" >> "$GITHUB_OUTPUT"
+      - name: Restore Git LFS objects from S3 cache
+        id: lfs_restore
+        if: ${{ inputs.lfs_cache_s3_bucket != '' }}
+        continue-on-error: true
+        uses: runs-on/cache/restore@88d90644011a3a9957fd141a106f5a94f9794203 # v5.0.7
+        env:
+          RUNS_ON_S3_BUCKET_CACHE: ${{ inputs.lfs_cache_s3_bucket }}
+          AWS_REGION: ${{ inputs.lfs_cache_aws_region }}
+        with:
+          path: .git/lfs
+          key: ${{ steps.lfs_cache_key.outputs.key }}
+          restore-keys: lfs-${{ github.repository_id }}-
+      - name: Fetch Git LFS objects
+        if: ${{ inputs.lfs_cache_s3_bucket != '' }}
+        run: git lfs pull
+      - name: Save Git LFS objects to S3 cache
+        if: ${{ inputs.lfs_cache_s3_bucket != '' && steps.lfs_restore.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: runs-on/cache/save@88d90644011a3a9957fd141a106f5a94f9794203 # v5.0.7
+        env:
+          RUNS_ON_S3_BUCKET_CACHE: ${{ inputs.lfs_cache_s3_bucket }}
+          AWS_REGION: ${{ inputs.lfs_cache_aws_region }}
+        with:
+          path: .git/lfs
+          key: ${{ steps.lfs_cache_key.outputs.key }}
 
       # MuJoCo 3.6.0's heavier constraint solver makes some scenes run slower than
       # realtime on CI runners, which surfaces as flaky gripper/camera timeouts.

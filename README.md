@@ -40,9 +40,13 @@ All input args:
 - `enable_gpu`: If `true`, pass `--gpus all` to the studio container so workloads inside it can access NVIDIA hardware (CUDA inference, GPU-accelerated simulation, etc.). The caller is responsible for routing the job to a GPU-equipped runner; setting `enable_gpu: true` on a runner with no GPU exposed will fail at container start with `could not select device driver "" with capabilities: [[gpu]]`. Default: `false`.
 - `image_ref`: Full container image reference template that overrides the default Docker Hub `picknikciuser/moveit-studio:<image_tag>-<ros_distro>`. Used by sister repos that need to pull a PR-built private GHCR image via `repository_dispatch`. Uses Python-style `format()` semantics: `{0}` is substituted with the matrix ROS distro at job start, so one input covers every distro the matrix expands over. Example: `ghcr.io/picknikrobotics/moveit-studio:my-branch-{0}-amd64`. When set, `enable_gpu`'s CUDA suffix is NOT auto-appended; bake any suffix into the template if needed. Default: `""` (use Docker Hub via `image_tag`).
 - `git_ref`: Git git_ref (branch, tag, or SHA) for the caller's repository to check out. Defaults to empty, which lets `actions/checkout` use the triggering ref (correct for `pull_request` and `push`). Set this when triggered by `repository_dispatch` and the caller needs to run against a specific paired branch carried in the dispatch payload (e.g., `v9.3`). Default: `""`.
+- `fetch_lfs`: If `true` (default), Git LFS objects are fetched during checkout. Set `false` to skip LFS entirely for workspaces that do not use it. Ignored when `lfs_cache_s3_bucket` is set (the cache path always fetches LFS). Default: `true`.
+- `lfs_cache_s3_bucket`: If set, Git LFS objects are fetched through an S3-backed cache instead of a direct pull: objects are restored from this bucket, any still-missing objects (including submodule LFS) are pulled from the Git remote, and the resulting set is saved back for future runs (keyed by the repository's full LFS object set, submodules included). Leave empty for a normal direct LFS pull. Requires the `lfs_cache_role_arn` secret, and the calling job must grant `id-token: write` permission. Default: `""`.
+- `lfs_cache_aws_region`: AWS region of `lfs_cache_s3_bucket`. Default: `"us-east-1"`.
 
 Required secrets:
 - `moveit_license_key`: The MoveIt Pro license key. Passing `secrets: inherit` (as in the examples above) is the easiest way to forward it from the calling workflow.
+- `lfs_cache_role_arn` (optional): AWS IAM role ARN to assume via GitHub OIDC for read/write access to `lfs_cache_s3_bucket`. Only needed when `lfs_cache_s3_bucket` is set; passed as a secret so the ARN does not appear in run logs.
 
 ## Supported ROS Distributions
 

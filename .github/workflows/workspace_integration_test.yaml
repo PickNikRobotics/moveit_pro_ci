@@ -184,7 +184,12 @@ jobs:
         id: lfs_cache_key
         run: |
           set -o pipefail
-          echo "key=lfs-${{ github.repository_id }}-$(git lfs ls-files -l | sha256sum | cut -c1-32)" >> "$GITHUB_OUTPUT"
+          # Include submodule LFS pointers so the key reflects every LFS object the
+          # recursive checkout needs. Submodule listing is best-effort: a flaky list
+          # only causes a cache miss, never wrong content.
+          top=$(git lfs ls-files -l)
+          sub=$(git submodule foreach --recursive --quiet 'git lfs ls-files -l' 2>/dev/null || true)
+          echo "key=lfs-${{ github.repository_id }}-$(printf '%s\n%s' "$top" "$sub" | sha256sum | cut -c1-32)" >> "$GITHUB_OUTPUT"
       - name: Restore Git LFS objects from S3 cache
         id: lfs_restore
         if: ${{ inputs.lfs_cache_s3_bucket != '' }}
@@ -194,12 +199,19 @@ jobs:
           RUNS_ON_S3_BUCKET_CACHE: ${{ inputs.lfs_cache_s3_bucket }}
           AWS_REGION: ${{ inputs.lfs_cache_aws_region }}
         with:
-          path: .git/lfs
+          path: |
+            .git/lfs
+            .git/modules/**/lfs
           key: ${{ steps.lfs_cache_key.outputs.key }}
           restore-keys: lfs-${{ github.repository_id }}-
-      - name: Fetch Git LFS objects
+      - name: Fetch Git LFS objects (repo + submodules)
         if: ${{ inputs.lfs_cache_s3_bucket != '' }}
-        run: git lfs pull
+        run: |
+          git lfs pull
+          # actions/checkout's `lfs: true` does not recurse LFS into submodules, so a
+          # recursive checkout leaves submodule LFS as pointers. Pull them too so the
+          # cached content matches a full recursive LFS checkout.
+          git submodule foreach --recursive 'git lfs pull'
       - name: Save Git LFS objects to S3 cache
         if: ${{ inputs.lfs_cache_s3_bucket != '' && steps.lfs_restore.outputs.cache-hit != 'true' }}
         continue-on-error: true
@@ -208,7 +220,9 @@ jobs:
           RUNS_ON_S3_BUCKET_CACHE: ${{ inputs.lfs_cache_s3_bucket }}
           AWS_REGION: ${{ inputs.lfs_cache_aws_region }}
         with:
-          path: .git/lfs
+          path: |
+            .git/lfs
+            .git/modules/**/lfs
           key: ${{ steps.lfs_cache_key.outputs.key }}
 
       # MuJoCo 3.6.0's heavier constraint solver makes some scenes run slower than

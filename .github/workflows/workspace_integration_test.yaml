@@ -152,7 +152,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Empty ``ref`` falls back to the default (triggering ref).
-          git_ref: ${{ inputs.git_ref }}
+          ref: ${{ inputs.git_ref }}
           submodules: recursive
           # Direct LFS pull only when fetching LFS and not using the S3 cache.
           lfs: ${{ inputs.fetch_lfs && inputs.lfs_cache_s3_bucket == '' }}

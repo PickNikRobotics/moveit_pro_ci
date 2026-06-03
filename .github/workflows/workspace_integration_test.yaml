@@ -179,6 +179,15 @@ jobs:
         with:
           role-to-assume: ${{ secrets.lfs_cache_role_arn }}
           aws-region: ${{ inputs.lfs_cache_aws_region }}
+      - name: Mark all directories as safe for git
+        if: ${{ inputs.lfs_cache_s3_bucket != '' }}
+        run: |
+          # The cache steps below run raw git in the container (key hashing, the
+          # cache action, git lfs pull across submodules), which trips
+          # "detected dubious ownership" when the checkout is owned by a
+          # different uid than the container user. '*' covers the workspace and
+          # every submodule git dir; safe in an ephemeral single-tenant CI runner.
+          git config --global --add safe.directory '*'
       - name: Compute LFS cache key
         if: ${{ inputs.lfs_cache_s3_bucket != '' }}
         id: lfs_cache_key

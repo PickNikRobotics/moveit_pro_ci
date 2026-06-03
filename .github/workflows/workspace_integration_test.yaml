@@ -240,6 +240,15 @@ jobs:
       # every top-level MuJoCo scene under `src/` so the sim stays at-or-under realtime.
       # MuJoCo merges multiple <option> elements, so this just adds (or overrides) the
       # timestep attribute without disturbing other settings (integrator, impratio, ...).
+      #
+      # Inject ONLY into top-level scene files -- never into a file that is pulled in
+      # via <include>. An included file's children are spliced into its parent at the
+      # <include> site, which may be inside a <body>/<worldbody>, where a global
+      # <option> is invalid and makes MuJoCo abort the whole model load with
+      # "Schema violation: unrecognized element 'option'". Skipping include targets
+      # keeps the inject on the one place a global <option> is always legal: the
+      # top-level scene root. (<mujocoinclude>-rooted fragments are skipped too, both
+      # because they're include targets and because the root regex excludes them.)
       - name: Override MuJoCo timestep for CI
         if: inputs.mujoco_ci_timestep != ''
         env:
@@ -251,16 +260,44 @@ jobs:
           # Reject anything that isn't a positive float to keep the sed-like inject safe.
           if not re.fullmatch(r'\d+(\.\d+)?(e-?\d+)?', ts) or float(ts) <= 0:
               raise SystemExit(f"mujoco_ci_timestep must be a positive number, got {ts!r}")
+          src = pathlib.Path('src')
+          xml_files = list(src.rglob('*.xml'))
+
+          def read(path):
+              try:
+                  return path.read_text(encoding='utf-8')
+              except (UnicodeDecodeError, OSError):
+                  return None
+
+          # Collect every file pulled in via <include file="...">, resolved relative to
+          # the including file's directory. These are model fragments spliced into a
+          # parent (sometimes inside a <body>) where a global <option> is illegal --
+          # never inject into them. An <include> path is relative to the file that
+          # declares it (MuJoCo's meshdir/assetdir do not affect <include>).
+          include_re = re.compile(
+              r'''<include\b[^>]*\bfile\s*=\s*(?:"([^"]*)"|'([^']*)')'''
+          )
+          included = set()
+          for path in xml_files:
+              text = read(path)
+              if text is None:
+                  continue
+              for m in include_re.finditer(text):
+                  rel = m.group(1) or m.group(2)
+                  included.add((path.parent / rel).resolve())
+
           # Match `<mujoco>` or `<mujoco ...>` but not `<mujocoinclude>` (mujoco followed
           # by space, '>', or '/').
           mujoco_root = re.compile(r'(<mujoco[\s>/])')
+          opening = re.compile(r'(<mujoco\b[^>]*>)')
           patched = []
-          for path in pathlib.Path('src').rglob('*.xml'):
-              try:
-                  text = path.read_text(encoding='utf-8')
-              except (UnicodeDecodeError, OSError):
+          skipped_includes = []
+          for path in xml_files:
+              if path.resolve() in included:
+                  skipped_includes.append(str(path))
                   continue
-              if not mujoco_root.search(text):
+              text = read(path)
+              if text is None or not mujoco_root.search(text):
                   continue
               # Strip any existing `timestep="..."` attribute on <option> elements first
               # allowing XML-valid whitespace around `=` and either quote style,
@@ -273,7 +310,6 @@ jobs:
               )
               # Inject a new <option timestep="..."/> right after the opening <mujoco ...>
               # tag. MuJoCo merges <option> attributes across elements (last wins).
-              opening = re.compile(r'(<mujoco\b[^>]*>)')
               new_text, n = opening.subn(
                   r'\1\n  <option timestep="' + ts + '" />  <!-- CI override (moveit_pro_ci) -->',
                   stripped,
@@ -284,12 +320,16 @@ jobs:
                   patched.append(str(path))
           if not patched:
               raise SystemExit(
-                  f"mujoco_ci_timestep={ts} was set but no <mujoco> scene files were "
-                  "found under src/. Refusing to proceed silently."
+                  f"mujoco_ci_timestep={ts} was set but no top-level <mujoco> scene "
+                  "files were found under src/. Refusing to proceed silently."
               )
-          print(f"Patched {len(patched)} MuJoCo scene file(s) with timestep={ts}:")
+          print(f"Patched {len(patched)} top-level MuJoCo scene file(s) with timestep={ts}:")
           for p in patched:
               print(f"  {p}")
+          if skipped_includes:
+              print(f"Left {len(skipped_includes)} <include>d fragment(s) unpatched:")
+              for p in sorted(skipped_includes):
+                  print(f"  {p}")
           PY
 
       # The 'lo' interfaces will not have multicast, and will fail trying to claim a participant index

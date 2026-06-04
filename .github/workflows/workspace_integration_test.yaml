@@ -18,14 +18,6 @@ on:
       runner:
         type: string
         default: "studio_16_core_runner"
-      mujoco_ci_timestep:
-        description: >
-          If non-empty, set MuJoCo `<option timestep>` to this value (seconds) on every
-          top-level `<mujoco>` scene file under `src/` before build. Used to keep the
-          simulator at-or-under realtime on slower CI runners; leave empty for normal
-          runs. Suggested: "0.004" (250 Hz).
-        type: string
-        default: ""
       use_ccache:
         description: >
           If true, use ccache to speed up the colcon build. The ccache directory is
@@ -233,64 +225,6 @@ jobs:
             .git/lfs
             .git/modules/**/lfs
           key: ${{ steps.lfs_cache_key.outputs.key }}
-
-      # MuJoCo 3.6.0's heavier constraint solver makes some scenes run slower than
-      # realtime on CI runners, which surfaces as flaky gripper/camera timeouts.
-      # When `mujoco_ci_timestep` is set, inject an `<option timestep="..." />` into
-      # every top-level MuJoCo scene under `src/` so the sim stays at-or-under realtime.
-      # MuJoCo merges multiple <option> elements, so this just adds (or overrides) the
-      # timestep attribute without disturbing other settings (integrator, impratio, ...).
-      - name: Override MuJoCo timestep for CI
-        if: inputs.mujoco_ci_timestep != ''
-        env:
-          MUJOCO_CI_TIMESTEP: ${{ inputs.mujoco_ci_timestep }}
-        run: |
-          python3 - <<'PY'
-          import os, re, pathlib
-          ts = os.environ['MUJOCO_CI_TIMESTEP']
-          # Reject anything that isn't a positive float to keep the sed-like inject safe.
-          if not re.fullmatch(r'\d+(\.\d+)?(e-?\d+)?', ts) or float(ts) <= 0:
-              raise SystemExit(f"mujoco_ci_timestep must be a positive number, got {ts!r}")
-          # Match `<mujoco>` or `<mujoco ...>` but not `<mujocoinclude>` (mujoco followed
-          # by space, '>', or '/').
-          mujoco_root = re.compile(r'(<mujoco[\s>/])')
-          patched = []
-          for path in pathlib.Path('src').rglob('*.xml'):
-              try:
-                  text = path.read_text(encoding='utf-8')
-              except (UnicodeDecodeError, OSError):
-                  continue
-              if not mujoco_root.search(text):
-                  continue
-              # Strip any existing `timestep="..."` attribute on <option> elements first
-              # allowing XML-valid whitespace around `=` and either quote style,
-              # so a later <option timestep="..."> cannot override the injected CI
-              # timestep when MuJoCo merges <option> attributes across elements (last wins).
-              stripped = re.sub(
-                  r"""(<option\b[^>]*?)\s+timestep\s*=\s*(?:"[^"]*"|'[^']*')""",
-                  r'\1',
-                  text,
-              )
-              # Inject a new <option timestep="..."/> right after the opening <mujoco ...>
-              # tag. MuJoCo merges <option> attributes across elements (last wins).
-              opening = re.compile(r'(<mujoco\b[^>]*>)')
-              new_text, n = opening.subn(
-                  r'\1\n  <option timestep="' + ts + '" />  <!-- CI override (moveit_pro_ci) -->',
-                  stripped,
-                  count=1,
-              )
-              if n:
-                  path.write_text(new_text, encoding='utf-8')
-                  patched.append(str(path))
-          if not patched:
-              raise SystemExit(
-                  f"mujoco_ci_timestep={ts} was set but no <mujoco> scene files were "
-                  "found under src/. Refusing to proceed silently."
-              )
-          print(f"Patched {len(patched)} MuJoCo scene file(s) with timestep={ts}:")
-          for p in patched:
-              print(f"  {p}")
-          PY
 
       # The 'lo' interfaces will not have multicast, and will fail trying to claim a participant index
       # with the default cyclone dds config. We set one for the unit tests to be able to execute.

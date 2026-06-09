@@ -119,6 +119,22 @@ on:
           lfs_cache_s3_bucket. Required when lfs_cache_s3_bucket is set. A secret
           (not an input) so the ARN is not shown in run logs.
         required: false
+      image_registry_username:
+        description: >
+          Username for authenticating the container image pull. Leave unset for
+          public images (the default Docker Hub image needs none); set it with
+          image_registry_password when image_ref points at a private registry
+          — for example a PR-specific GHCR image dispatched from a sister repo,
+          where the consuming repo's own GITHUB_TOKEN has no read access to the
+          producing org's packages. When empty the runner skips docker login
+          and pulls anonymously, preserving the existing public-image behavior.
+        required: false
+      image_registry_password:
+        description: >
+          Password or token paired with image_registry_username. For a private
+          GHCR image, a token (e.g. a GitHub App installation token) with
+          read:packages on the image's org.
+        required: false
 
 jobs:
   integration-test-in-studio-container:
@@ -147,6 +163,13 @@ jobs:
       # this workflow add the CUDA suffix, matching the published tag shape
       # `<tag>-<distro>-<arch><gpu_suffix>`.
       image: ${{ inputs.image_ref != '' && format('{0}{1}', format(inputs.image_ref, matrix.ros_distro), inputs.enable_gpu && inputs.gpu_image_suffix || '') || format('picknikciuser/moveit-studio:{0}-{1}{2}', inputs.image_tag, matrix.ros_distro, inputs.enable_gpu && inputs.gpu_image_suffix || '') }}
+      # Authenticate the image pull when the caller supplies registry
+      # credentials (needed for a private image_ref). The runner skips
+      # docker login when the username is empty, so the default public Docker
+      # Hub image keeps pulling anonymously and existing callers are unchanged.
+      credentials:
+        username: ${{ secrets.image_registry_username }}
+        password: ${{ secrets.image_registry_password }}
       # GHA expressions support short-circuit: `cond && 'a' || 'b'`. Empty string
       # when GPU is disabled is fine — GHA omits empty `options` from the
       # `docker create` invocation.

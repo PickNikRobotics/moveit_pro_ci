@@ -82,6 +82,14 @@ on:
         description: AWS region of lfs_cache_s3_bucket.
         type: string
         default: "us-east-1"
+      ros_distros:
+        description: >
+          JSON array of ROS distros to run the integration-test matrix over.
+          The default covers both supported distros; pass a subset (for
+          example, '["jazzy"]') to skip one. Must be a JSON array string so it
+          can feed `fromJSON` in the matrix.
+        type: string
+        default: '["humble", "jazzy"]'
 
     secrets:
       moveit_license_key:
@@ -99,9 +107,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ros_distro:
-          - humble
-          - jazzy
+        # Driven by the `ros_distros` input (default '["humble", "jazzy"]')
+        # so callers can run a subset, e.g. '["jazzy"]' to skip humble.
+        ros_distro: ${{ fromJSON(inputs.ros_distros) }}
     env:
       MOVEIT_LICENSE_KEY: ${{ secrets.moveit_license_key }}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp

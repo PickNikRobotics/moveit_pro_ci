@@ -33,6 +33,17 @@ on:
           that have no GPU exposed.
         type: boolean
         default: false
+      gpu_image_suffix:
+        description: >
+          Image suffix appended to the Docker Hub tag when `enable_gpu` is true
+          (and `image_ref` is unset), selecting which published GPU image variant
+          to pull. The image actually pulled becomes
+          `picknikciuser/moveit-studio:<image_tag>-<ros_distro><gpu_image_suffix>`.
+          Defaults to `-cuda12.6-cudnn9` for backward compatibility; pass
+          `-cuda13.2-cudnn9` for Jazzy/CUDA 13.2 images. Ignored when
+          `enable_gpu` is false or `image_ref` is set.
+        type: string
+        default: -cuda12.6-cudnn9
       git_ref:
         description: >
           Git ref (branch, tag, or SHA) for the caller's repository to check
@@ -121,9 +132,9 @@ jobs:
       # When `image_ref` is set, format it with the matrix ROS distro and use
       # it verbatim — this is the dispatched-from-sister-repo path that needs
       # a private GHCR image. Otherwise fall back to the Docker Hub default
-      # used by every existing caller, appending the CUDA suffix when
-      # `enable_gpu` is set.
-      image: ${{ inputs.image_ref != '' && format(inputs.image_ref, matrix.ros_distro) || format('picknikciuser/moveit-studio:{0}-{1}{2}', inputs.image_tag, matrix.ros_distro, inputs.enable_gpu && '-cuda12.6-cudnn9' || '') }}
+      # used by every existing caller, appending the `gpu_image_suffix` when
+      # `enable_gpu` is set (default `-cuda12.6-cudnn9`).
+      image: ${{ inputs.image_ref != '' && format(inputs.image_ref, matrix.ros_distro) || format('picknikciuser/moveit-studio:{0}-{1}{2}', inputs.image_tag, matrix.ros_distro, inputs.enable_gpu && inputs.gpu_image_suffix || '') }}
       # GHA expressions support short-circuit: `cond && 'a' || 'b'`. Empty string
       # when GPU is disabled is fine — GHA omits empty `options` from the
       # `docker create` invocation.

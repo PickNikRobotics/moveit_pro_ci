@@ -137,7 +137,27 @@ on:
         required: false
 
 jobs:
+  # Fail fast if the registry credentials are half-configured. The container
+  # pull treats an empty username as "anonymous", so a lone password (or a
+  # lone username) would silently fall back to an anonymous pull and 403 deep
+  # in container init with a confusing error. Gate the real job on this so the
+  # misconfiguration surfaces immediately, in plain text.
+  validate-registry-credentials:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require registry credentials to be set as a pair
+        env:
+          REGISTRY_USERNAME: ${{ secrets.image_registry_username }}
+          REGISTRY_PASSWORD: ${{ secrets.image_registry_password }}
+        run: |
+          if { [ -n "$REGISTRY_USERNAME" ] && [ -z "$REGISTRY_PASSWORD" ]; } || \
+             { [ -z "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ]; }; then
+            echo "::error::image_registry_username and image_registry_password must be set together (both or neither)."
+            exit 1
+          fi
+
   integration-test-in-studio-container:
+    needs: validate-registry-credentials
     runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false

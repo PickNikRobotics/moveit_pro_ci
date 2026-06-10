@@ -33,24 +33,6 @@ on:
           that have no GPU exposed.
         type: boolean
         default: false
-      gpu_image_suffix:
-        description: >
-          Image suffix appended to the Docker Hub tag when `enable_gpu` is true
-          (and `image_ref` is unset), selecting which published GPU image variant
-          to pull. The image actually pulled becomes
-          `picknikciuser/moveit-studio:<image_tag>-<ros_distro><gpu_image_suffix>`.
-          Defaults to `-cuda12.6-cudnn9` for backward compatibility; pass
-          `-cuda13.2-cudnn9` for Jazzy/CUDA 13.2 images. Appended to both the
-          Docker Hub default tag and a caller-supplied `image_ref` template.
-          Ignored only when `enable_gpu` is false. NOTE: this is a single
-          string applied across every `ros_distro` the matrix expands over, so
-          a multi-distro caller with `enable_gpu: true` must ensure all its
-          distros publish the same suffix (today CUDA is distro-coupled —
-          humble=-cuda12.6-cudnn9, jazzy=-cuda13.2-cudnn9 — so GPU callers
-          should restrict `ros_distros` to one distro or pass a suffix valid
-          for all of them).
-        type: string
-        default: -cuda12.6-cudnn9
       git_ref:
         description: >
           Git ref (branch, tag, or SHA) for the caller's repository to check
@@ -67,20 +49,12 @@ on:
           `picknikciuser/moveit-studio:<image_tag>-<ros_distro>` from Docker
           Hub. Useful when a caller (typically a `repository_dispatch` from a
           sister repo) needs the integration run to pull a private GHCR image
-          built for a specific PR.
-
-          Uses `format()` semantics: `{0}` is substituted with the matrix ROS
-          distro at job start, so one input covers every distro the matrix
-          expands over. Example:
+          built for a specific PR. Uses `format()` semantics: `{0}` is
+          substituted with the matrix ROS distro at job start, so one input
+          covers every distro the matrix expands over. Example:
           `ghcr.io/picknikrobotics/moveit-studio:my-branch-{0}-amd64`.
-
-          When set and `enable_gpu` is true, `gpu_image_suffix` IS appended to
-          the formatted ref (single source of truth), so pass a suffix-free
-          template such as `ghcr.io/picknikrobotics/moveit-studio:my-branch-{0}-amd64`
-          and let this workflow add the CUDA suffix.
         type: string
         default: ""
-
       fetch_lfs:
         description: >
           Whether to fetch Git LFS objects during checkout. Set false to skip
@@ -140,14 +114,9 @@ jobs:
       # `image_ref` (when set) is a template formatted with the matrix ROS
       # distro — the dispatched-from-sister-repo path that pulls a PR-specific
       # image. Otherwise fall back to the Docker Hub default used by every
-      # existing caller. In BOTH cases, when `enable_gpu` is set we append
-      # `gpu_image_suffix` (default `-cuda12.6-cudnn9`) so the GPU variant is
-      # selected from a single source of truth. Senders therefore pass a
-      # suffix-free `image_ref` template (e.g. `…:<tag>-{0}-amd64`) and let
-      # this workflow add the CUDA suffix, matching the published tag shape
-      # `<tag>-<distro>-<arch><gpu_suffix>`.
-      image: ${{ inputs.image_ref != '' && format('{0}{1}', format(inputs.image_ref, matrix.ros_distro), inputs.enable_gpu && inputs.gpu_image_suffix || '') || format('picknikciuser/moveit-studio:{0}-{1}{2}', inputs.image_tag, matrix.ros_distro, inputs.enable_gpu && inputs.gpu_image_suffix || '') }}
-      # GHA expressions support short-circuit: `cond && 'a' || 'b'`. Empty string
+      # existing caller.
+      image: ${{ inputs.image_ref != '' && format(inputs.image_ref, matrix.ros_distro) || format('picknikciuser/moveit-studio:{0}-{1}', inputs.image_tag, matrix.ros_distro) }}
+      # `options` uses GHA short-circuit (`cond && 'a' || 'b'`). Empty string
       # when GPU is disabled is fine — GHA omits empty `options` from the
       # `docker create` invocation.
       options: ${{ inputs.enable_gpu && '--gpus all' || '' }}

@@ -1,0 +1,411 @@
+name: Build Workspace Image
+
+on:
+  workflow_call:
+    inputs:
+      base_image_ref:
+        description: Exact MoveIt Pro base image reference pinned by sha256 digest.
+        type: string
+        required: true
+      config_package:
+        description: Package passed to colcon build --packages-up-to. Empty builds all.
+        type: string
+        default: ""
+      colcon_build_args_json:
+        description: JSON array of additional colcon build arguments.
+        type: string
+        default: "[]"
+      ros_distro:
+        description: Single ROS distro baked into this image.
+        type: string
+        default: humble
+      fetch_lfs:
+        description: Fetch Git LFS objects in the caller repository and all submodules.
+        type: boolean
+        default: true
+    outputs:
+      image_ref:
+        description: Immutable derived image reference in repository@sha256 form.
+        value: ${{ jobs.build-workspace-image.outputs.image_ref }}
+      image_digest:
+        description: OCI digest emitted by BuildKit.
+        value: ${{ jobs.build-workspace-image.outputs.image_digest }}
+      source_sha:
+        description: Exact caller source SHA baked into the image.
+        value: ${{ jobs.build-workspace-image.outputs.source_sha }}
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  build-workspace-image:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    outputs:
+      image_ref: ${{ steps.publish.outputs.image_ref }}
+      image_digest: ${{ steps.build.outputs.digest }}
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+    steps:
+      - name: Reject untrusted caller events
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            push|workflow_dispatch|schedule)
+              ;;
+            pull_request)
+              if [[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+                echo "::error::fork pull requests are not trusted for package-writing builds"
+                exit 2
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported caller event for package-writing build: $EVENT_NAME"
+              exit 2
+              ;;
+          esac
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          lfs: ${{ inputs.fetch_lfs }}
+          persist-credentials: false
+
+      - name: Materialize submodule LFS payloads
+        if: inputs.fetch_lfs
+        run: git submodule foreach --recursive 'git lfs pull'
+
+      - name: Prepare immutable image contract
+        id: prepare
+        env:
+          INPUT_BASE_IMAGE_REF: ${{ inputs.base_image_ref }}
+          INPUT_CONFIG_PACKAGE: ${{ inputs.config_package }}
+          INPUT_ROS_DISTRO: ${{ inputs.ros_distro }}
+          INPUT_COLCON_BUILD_ARGS_JSON: ${{ inputs.colcon_build_args_json }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_BASE_IMAGE_REF" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Base image must be pinned by an immutable sha256 digest"
+            exit 2
+          fi
+          if [[ ! "$INPUT_ROS_DISTRO" =~ ^[a-z0-9._-]+$ ]]; then
+            echo "::error::ros_distro contains unsupported characters"
+            exit 2
+          fi
+          if [[ -n "$INPUT_CONFIG_PACKAGE" && ! "$INPUT_CONFIG_PACKAGE" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "::error::config_package is not a ROS package name"
+            exit 2
+          fi
+
+          build_args_json_b64="$(python3 - <<'PY'
+          import base64
+          import json
+          import os
+
+          value = json.loads(os.environ["INPUT_COLCON_BUILD_ARGS_JSON"])
+          if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+              raise SystemExit("colcon_build_args_json must be a JSON array of strings")
+          if any("\0" in item for item in value):
+              raise SystemExit("colcon_build_args_json entries cannot contain NUL bytes")
+          encoded = json.dumps(value, separators=(",", ":")).encode()
+          print(base64.b64encode(encoded).decode())
+          PY
+          )"
+
+          source_sha="$(git rev-parse HEAD)"
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::checked-out source is not a full commit SHA"
+            exit 2
+          fi
+          caller_repository="${GITHUB_REPOSITORY#*/}"
+          image_repository="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${caller_repository}-workspace"
+          image_repository="$(printf '%s' "$image_repository" | tr '[:upper:]' '[:lower:]')"
+          image_tag="sha-${source_sha}-${INPUT_ROS_DISTRO}"
+
+          {
+            echo "base_image=$INPUT_BASE_IMAGE_REF"
+            echo "build_args_json_b64=$build_args_json_b64"
+            echo "image_repository=$image_repository"
+            echo "image_tag=$image_tag"
+            echo "source_sha=$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Record recursive source provenance
+        id: provenance
+        env:
+          BASE_IMAGE_REF: ${{ steps.prepare.outputs.base_image }}
+          ROS_DISTRO: ${{ inputs.ros_distro }}
+          SOURCE_SHA: ${{ steps.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          provenance_path="$RUNNER_TEMP/.moveit-pro-ci-source-provenance.json"
+          python3 - "$provenance_path" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          submodule_lines = subprocess.run(
+              ["git", "submodule", "status", "--recursive"],
+              cwd=workspace,
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          submodules = []
+          repositories = [(".", workspace)]
+          for line in submodule_lines:
+              if not line or line[0] != " ":
+                  raise SystemExit(f"submodule is not at its recorded commit: {line!r}")
+              fields = line[1:].split(maxsplit=2)
+              if len(fields) < 2 or len(fields[0]) != 40:
+                  raise SystemExit(f"invalid submodule status: {line!r}")
+              relative_path = fields[1]
+              submodule_path_unresolved = workspace / relative_path
+              if submodule_path_unresolved.is_symlink():
+                  raise SystemExit(f"submodule path is a symlink: {relative_path!r}")
+              submodule_path = submodule_path_unresolved.resolve()
+              if not submodule_path.is_relative_to(workspace):
+                  raise SystemExit(f"submodule escapes workspace: {relative_path!r}")
+              submodules.append({"path": relative_path, "sha": fields[0]})
+              repositories.append((relative_path, submodule_path))
+
+          lfs_objects = []
+          for repository_path, repository in repositories:
+              output = subprocess.run(
+                  ["git", "lfs", "ls-files", "-l"],
+                  cwd=repository,
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout
+              for line in output.splitlines():
+                  fields = line.split(maxsplit=2)
+                  if len(fields) != 3 or len(fields[0]) != 64:
+                      raise SystemExit(f"invalid git-lfs record in {repository_path}: {line!r}")
+                  oid, _state, relative_file = fields
+                  candidate = repository / relative_file
+                  if candidate.is_symlink():
+                      raise SystemExit(f"git-lfs path is a symlink: {repository_path}/{relative_file}")
+                  materialized = candidate.resolve(strict=True)
+                  if not materialized.is_relative_to(repository.resolve()):
+                      raise SystemExit(f"unsafe git-lfs path: {repository_path}/{relative_file}")
+                  digest = hashlib.sha256()
+                  with materialized.open("rb") as stream:
+                      for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                          digest.update(chunk)
+                  materialized_sha256 = digest.hexdigest()
+                  if materialized_sha256 != oid:
+                      raise SystemExit(
+                          f"git-lfs payload is not materialized: {repository_path}/{relative_file}"
+                      )
+                  lfs_objects.append(
+                      {
+                          "repository_path": repository_path,
+                          "path": relative_file,
+                          "oid_sha256": oid,
+                          "materialized_sha256": materialized_sha256,
+                          "size": materialized.stat().st_size,
+                      }
+                  )
+
+          document = {
+              "schema_version": 1,
+              "source_repository": os.environ["GITHUB_REPOSITORY"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "base_image_ref": os.environ["BASE_IMAGE_REF"],
+              "ros_distro": os.environ["ROS_DISTRO"],
+              "submodules": sorted(submodules, key=lambda item: item["path"]),
+              "lfs_objects": sorted(
+                  lfs_objects,
+                  key=lambda item: (item["repository_path"], item["path"]),
+              ),
+          }
+          output_path = pathlib.Path(sys.argv[1])
+          output_path.write_text(
+              json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+          source_provenance_sha256="$(sha256sum "$provenance_path" | cut -d' ' -f1)"
+          echo "source_provenance_sha256=$source_provenance_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to caller GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Require private workspace package before confidential publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REPOSITORY: ${{ steps.prepare.outputs.image_repository }}
+        run: |
+          set -euo pipefail
+          owner_type="$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.type)"
+          package_name="${GITHUB_REPOSITORY#*/}-workspace"
+          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$owner_type" == "Organization" ]]; then
+            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+          else
+            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+          fi
+
+          metadata_file="$(mktemp)"
+          error_file="$(mktemp)"
+          package_absent=false
+          if gh api "$endpoint" > "$metadata_file" 2> "$error_file"; then
+            :
+          elif grep -Eq '\(HTTP 404\)$' "$error_file"; then
+            package_absent=true
+          else
+            echo "::error::Unable to determine workspace package visibility"
+            exit 2
+          fi
+
+          if [[ "$package_absent" == true ]]; then
+            bootstrap_context="$(mktemp -d)"
+            printf 'FROM scratch\nLABEL org.opencontainers.image.description="Non-confidential package privacy bootstrap"\n' \
+              > "$bootstrap_context/Dockerfile"
+            docker build \
+              --tag "$IMAGE_REPOSITORY:privacy-bootstrap" \
+              "$bootstrap_context"
+            docker push "$IMAGE_REPOSITORY:privacy-bootstrap"
+          fi
+
+          if ! visibility="$(gh api "$endpoint" --jq .visibility 2>/dev/null)"; then
+            echo "::error::Unable to determine workspace package visibility"
+            exit 2
+          fi
+          if [[ "$visibility" != "private" ]]; then
+            echo "::error::Workspace package is not private; refusing confidential publication"
+            exit 2
+          fi
+
+      - name: Prepare credential-free build context
+        env:
+          CONTEXT_PATH: ${{ runner.temp }}/moveit-pro-workspace-context
+        run: |
+          set -euo pipefail
+          rm -rf "$CONTEXT_PATH"
+          mkdir -p "$CONTEXT_PATH"
+          # Include recursively materialized submodule and LFS payloads, but never
+          # send repository metadata or checkout credentials to BuildKit.
+          tar --exclude=.git --exclude='*/.git' -C "$GITHUB_WORKSPACE" -cf - . \
+            | tar -C "$CONTEXT_PATH" -xf -
+          cp "$RUNNER_TEMP/.moveit-pro-ci-source-provenance.json" \
+            "$CONTEXT_PATH/.moveit-pro-ci-source-provenance.json"
+          rm -f "$CONTEXT_PATH/.dockerignore"
+
+      - name: Generate workspace image Dockerfile
+        env:
+          DOCKERFILE_PATH: ${{ runner.temp }}/moveit-pro-workspace.Dockerfile
+        run: |
+          cat > "$DOCKERFILE_PATH" <<'DOCKERFILE'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+          ARG ROS_DISTRO
+          ARG CONFIG_PACKAGE
+          ARG COLCON_BUILD_ARGS_JSON_B64
+          ARG SOURCE_SHA
+          ARG SOURCE_PROVENANCE_SHA256
+          ARG BASE_IMAGE_REF
+          ENV PREBUILT_WS=/opt/prebuilt_ws
+          WORKDIR ${PREBUILT_WS}
+          COPY . ${PREBUILT_WS}
+          RUN set -euo pipefail; \
+              set +u; \
+              source "/opt/ros/${ROS_DISTRO}/setup.sh"; \
+              source /opt/overlay_ws/install/setup.sh; \
+              set -u; \
+              colcon mixin remove default >/dev/null 2>&1 || true; \
+              colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/7558e35befbff0d88d9b8f701b3ab1b073cbcaba/index.yaml; \
+              colcon mixin update default; \
+              colcon metadata remove default >/dev/null 2>&1 || true; \
+              colcon metadata add default https://raw.githubusercontent.com/colcon/colcon-metadata-repository/28d11cfc270583b8ddf26812423c3dd9ecd6af33/index.yaml; \
+              colcon metadata update default; \
+              mkdir -p /root/.colcon; \
+              if [[ -f colcon-defaults.yaml ]]; then cp colcon-defaults.yaml /root/.colcon/defaults.yaml; fi; \
+              apt-get update; \
+              rosdep update; \
+              rosdep install --from-paths src --ignore-src -r -y; \
+              mapfile -d '' -t build_args < <(python3 -c 'import base64,json,sys; [sys.stdout.buffer.write(item.encode() + b"\0") for item in json.loads(base64.b64decode(sys.argv[1]))]' "$COLCON_BUILD_ARGS_JSON_B64"); \
+              package_args=(); \
+              if [[ -n "$CONFIG_PACKAGE" ]]; then package_args=(--packages-up-to "$CONFIG_PACKAGE"); fi; \
+              colcon build "${package_args[@]}" "${build_args[@]}"; \
+              printf '{"schema_version":1,"source_sha":"%s","ros_distro":"%s","base_image_ref":"%s","source_provenance_sha256":"%s"}\n' \
+                "$SOURCE_SHA" "$ROS_DISTRO" "$BASE_IMAGE_REF" "$SOURCE_PROVENANCE_SHA256" \
+                > .moveit-pro-ci-image.json; \
+              rm -rf /var/lib/apt/lists/*
+          LABEL org.opencontainers.image.revision=${SOURCE_SHA}
+          DOCKERFILE
+
+      - name: Build and push workspace image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ runner.temp }}/moveit-pro-workspace-context
+          file: ${{ runner.temp }}/moveit-pro-workspace.Dockerfile
+          push: true
+          tags: ${{ steps.prepare.outputs.image_repository }}:${{ steps.prepare.outputs.image_tag }}
+          build-args: |
+            BASE_IMAGE=${{ steps.prepare.outputs.base_image }}
+            BASE_IMAGE_REF=${{ steps.prepare.outputs.base_image }}
+            ROS_DISTRO=${{ inputs.ros_distro }}
+            CONFIG_PACKAGE=${{ inputs.config_package }}
+            COLCON_BUILD_ARGS_JSON_B64=${{ steps.prepare.outputs.build_args_json_b64 }}
+            SOURCE_SHA=${{ steps.prepare.outputs.source_sha }}
+            SOURCE_PROVENANCE_SHA256=${{ steps.provenance.outputs.source_provenance_sha256 }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.prepare.outputs.source_sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest workspace image provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ steps.prepare.outputs.image_repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Require private package visibility after publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          owner_type="$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.type)"
+          package_name="${GITHUB_REPOSITORY#*/}-workspace"
+          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$owner_type" == "Organization" ]]; then
+            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+          else
+            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+          fi
+          visibility="$(gh api "$endpoint" --jq .visibility)"
+          if [[ "$visibility" != "private" ]]; then
+            echo "::error::Published workspace package is not private"
+            exit 2
+          fi
+
+      - name: Export immutable image reference
+        id: publish
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REPOSITORY: ${{ steps.prepare.outputs.image_repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::BuildKit did not return a valid sha256 image digest"
+            exit 2
+          fi
+          echo "image_ref=${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" >> "$GITHUB_OUTPUT"

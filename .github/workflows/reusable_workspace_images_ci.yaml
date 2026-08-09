@@ -1,0 +1,49 @@
+name: Reusable Workspace Image Contracts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/reusable_workspace_images_ci.yaml"
+      - ".github/workflows/workspace_build_image.yaml"
+      - ".github/workflows/workspace_test_image.yaml"
+      - "tests/test_reusable_workspace_images.py"
+      - "README.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/reusable_workspace_images_ci.yaml"
+      - ".github/workflows/workspace_build_image.yaml"
+      - ".github/workflows/workspace_test_image.yaml"
+      - "tests/test_reusable_workspace_images.py"
+      - "README.md"
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install contract-test dependencies
+        run: python -m pip install pytest==7.4.4 PyYAML==6.0.3
+
+      - name: Run reusable-workflow contracts
+        run: pytest -q tests/test_reusable_workspace_images.py
+
+      - name: Validate new workflow syntax and shell
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo:ro" \
+            --workdir /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color \
+            .github/workflows/workspace_build_image.yaml \
+            .github/workflows/workspace_test_image.yaml

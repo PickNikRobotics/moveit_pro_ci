@@ -56,6 +56,105 @@ The reusable workflow runs each job once per supported ROS distro via a matrix. 
 
 For each distro, the workflow pulls `picknikciuser/moveit-studio:<image_tag>-<ros_distro>`. MoveIt Pro began supporting ROS Jazzy in 9.2.0. Jobs for each distro run in parallel and are reported as separate matrix entries in the GitHub Actions UI.
 
+## Build Once, Test Many Workspace Images
+
+Large customer workspaces can avoid repeating checkout, rosdep, and compilation in every
+independent test job. `workspace_build_image.yaml` builds the caller's exact source once,
+pushes a derived image to the caller-owned private GHCR package, creates a signed GitHub
+artifact attestation, and exports an **immutable digest** reference. Each
+`workspace_test_image.yaml` consumer verifies that attestation, source SHA, builder workflow
+SHA, base image, package namespace, and image metadata on a secretless host before starting the
+licensed test container. The consumer runs that container from a hosted runner, waits for it to
+stop, copies only the selected packages' `test_results`/`Testing` trees, and sanitizes them on
+the host. The stopped container never mounts the host staging or upload directories.
+
+Both the calling and reusable build workflows need `attestations: write`, `id-token: write`,
+`contents: read`, and `packages: write`. Consumers need `attestations: read`, `contents: read`,
+and `packages: read`. The MoveIt Pro license is unavailable to the build and preflight jobs and
+is scoped only to test execution and artifact secret-scanning steps.
+
+```yaml
+jobs:
+  build:
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    uses: PickNikRobotics/moveit_pro_ci/.github/workflows/workspace_build_image.yaml@<commit-sha>
+    with:
+      ros_distro: humble
+      base_image_ref: picknikciuser/moveit-studio@sha256:<reviewed-humble-digest>
+      config_package: autowash_config
+      colcon_build_args_json: >-
+        ["--cmake-args", "-DAUTOWASH_CI_MOCK_BUILD=ON"]
+
+  quality:
+    needs: build
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    uses: PickNikRobotics/moveit_pro_ci/.github/workflows/workspace_test_image.yaml@<same-commit-sha>
+    with:
+      ros_distro: humble
+      image_ref: ${{ needs.build.outputs.image_ref }}
+      expected_source_sha: ${{ needs.build.outputs.source_sha }}
+      expected_base_image_ref: picknikciuser/moveit-studio@sha256:<reviewed-humble-digest>
+      builder_workflow_sha: <same-commit-sha>
+      test_packages_json: '["autowash_config"]'
+      colcon_test_args_json: '["--ctest-args", "-R", "wash_quality_regression"]'
+      artifact_name: wash-quality-humble
+    secrets:
+      moveit_license_key: ${{ secrets.MOVEIT_LICENSE_KEY }}
+```
+
+Use one build job and fan out as many consumer jobs as needed. Consumers reject mutable image
+or base tags, the wrong caller-owned package, mismatched source/base/ROS metadata, unsigned
+images, the wrong signer workflow or signer commit, self-hosted builders, and non-private
+packages. `workspace_test_image.yaml` deliberately does not retry failed tests; deterministic
+diagnostics from the first invocation remain visible. Caller arguments are JSON arrays so
+quoted values and spaces retain exact argument boundaries.
+
+These workflows use an explicit event allowlist and reject `pull_request_target`, fork pull
+requests, `merge_group`, and unknown events. A normal same-repository `pull_request`,
+protected-branch `push`, schedule, or manual dispatch can use them. Do not place package-write
+or license-bearing callers in workflows that check out untrusted source.
+
+The derived image includes caller source, build, and install trees. The package path is fixed to
+`ghcr.io/<caller-owner>/<caller-repository>-workspace`, and both producer and consumer require
+private visibility. If the package does not yet exist, the producer first pushes a content-free
+`scratch` image tagged `privacy-bootstrap` and verifies that GitHub created the package as
+private before any customer source is published. API failures other than an explicit 404 fail
+closed. Keep the harmless bootstrap tag and configure cleanup for per-commit tags. The workspace
+image embeds a deterministic,
+hash-bound source manifest containing the top-level commit, every recursive submodule commit,
+every Git LFS OID plus materialized payload SHA-256/size, the base image digest, and ROS distro.
+The base image is digest-pinned and colcon mixin/metadata indexes are commit-pinned.
+`rosdep`/APT resolution is still recorded rather than byte-reproducible; the signed derived
+digest identifies the exact image that was actually tested.
+
+Production rollout is gated on caller-owned cleanup. The required policy is: tag each image only
+as `sha-<40-hex-source>-<ros-distro>`; consume only its digest; on pull-request close, enumerate
+the fixed caller package and delete only a version carrying exactly that head tag after a 24-hour
+diagnostic window; and run a scheduled sweep for untagged versions older than 15 days. Cleanup
+must fail closed if a version has another tag, the package path differs, or the PR head is not a
+full SHA. The initial reusable build/test change does not delete package versions automatically.
+
+GitHub-hosted `uses: owner/repository/.github/workflows/...@sha` requires the reusable workflow
+commit to exist on GitHub. A push is **not** needed to exercise the generated Dockerfile,
+argument parsing, provenance metadata, or Autowash build/test commands locally; it is needed
+before an Autowash GitHub Actions run can resolve and call these cross-repository workflows.
+
+### Alternative extension to the existing integration workflow
+
+An alternative, **not implemented**, would add `skip_colcon_build`, a prebuilt workspace root,
+and immutable image-provenance inputs to `workspace_integration_test.yaml`. That approach must
+also bypass checkout, LFS, rosdep, and ccache when consuming a prebuilt image; merely skipping
+the `colcon build` command would retain most duplicated cost and could test a different source
+than the image contains. The separate workflows above keep producer credentials, signed
+provenance, and test-only behavior explicit.
+
 ## Reusable Actions
 
 ### `find_release_branch`

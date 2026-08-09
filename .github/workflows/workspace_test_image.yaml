@@ -1,0 +1,482 @@
+name: Test Workspace Image
+
+on:
+  workflow_call:
+    inputs:
+      image_ref:
+        description: Immutable caller-owned workspace image reference.
+        type: string
+        required: true
+      expected_source_sha:
+        description: Caller source SHA that must match signed provenance and image metadata.
+        type: string
+        required: true
+      expected_base_image_ref:
+        description: Digest-pinned base image reference expected in image metadata.
+        type: string
+        required: true
+      builder_workflow_sha:
+        description: Immutable moveit_pro_ci commit containing the signing build workflow.
+        type: string
+        required: true
+      test_packages_json:
+        description: Non-empty JSON array of workspace packages to test.
+        type: string
+        required: true
+      colcon_test_args_json:
+        description: JSON array of additional colcon test arguments.
+        type: string
+        default: "[]"
+      ros_distro:
+        description: ROS distro baked into the image.
+        type: string
+        default: humble
+      artifact_name:
+        description: Unique artifact name for this consumer job.
+        type: string
+        required: true
+    secrets:
+      moveit_license_key:
+        required: true
+
+permissions:
+  attestations: read
+  contents: read
+  packages: read
+
+jobs:
+  preflight-workspace-image:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      image_ref: ${{ steps.verify.outputs.image_ref }}
+    steps:
+      - name: Reject untrusted caller events
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            push|workflow_dispatch|schedule)
+              ;;
+            pull_request)
+              if [[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+                echo "::error::fork pull requests are not trusted for licensed tests"
+                exit 2
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported caller event for licensed tests: $EVENT_NAME"
+              exit 2
+              ;;
+          esac
+
+      - name: Verify registry scope, signed provenance, and image metadata
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          EXPECTED_BASE_IMAGE_REF: ${{ inputs.expected_base_image_ref }}
+          BUILDER_WORKFLOW_SHA: ${{ inputs.builder_workflow_sha }}
+          ROS_DISTRO: ${{ inputs.ros_distro }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::expected_source_sha must be a full commit SHA"
+            exit 2
+          fi
+          if [[ ! "$BUILDER_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::builder_workflow_sha must be a full commit SHA"
+            exit 2
+          fi
+          if [[ ! "$EXPECTED_BASE_IMAGE_REF" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::expected_base_image_ref must be pinned by sha256 digest"
+            exit 2
+          fi
+          if [[ ! "$ROS_DISTRO" =~ ^[a-z0-9._-]+$ ]]; then
+            echo "::error::ros_distro contains unsupported characters"
+            exit 2
+          fi
+
+          caller_repository="${GITHUB_REPOSITORY#*/}"
+          expected_repository="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${caller_repository}-workspace"
+          expected_repository="$(printf '%s' "$expected_repository" | tr '[:upper:]' '[:lower:]')"
+          image_repository="${IMAGE_REF%@sha256:*}"
+          image_digest="${IMAGE_REF#*@}"
+          if [[ "$image_repository" != "$expected_repository" || ! "$image_digest" =~ ^sha256:[0-9a-f]{64}$ || "$IMAGE_REF" != "${image_repository}@${image_digest}" ]]; then
+            echo "::error::image_ref must be a digest in the caller-owned workspace package"
+            exit 2
+          fi
+
+          owner_type="$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.type)"
+          package_name="${caller_repository}-workspace"
+          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$owner_type" == "Organization" ]]; then
+            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+          else
+            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+          fi
+          visibility="$(gh api "$endpoint" --jq .visibility)"
+          if [[ "$visibility" != "private" ]]; then
+            echo "::error::Workspace image package is not private"
+            exit 2
+          fi
+
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          gh attestation verify "oci://$IMAGE_REF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow PickNikRobotics/moveit_pro_ci/.github/workflows/workspace_build_image.yaml \
+            --signer-digest "$BUILDER_WORKFLOW_SHA" \
+            --source-digest "$EXPECTED_SOURCE_SHA" \
+            --deny-self-hosted-runners
+          docker pull "$IMAGE_REF"
+
+          container_id="$(docker create --entrypoint /bin/true "$IMAGE_REF")"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          metadata_dir="$RUNNER_TEMP/moveit-pro-ci-metadata"
+          rm -rf "$metadata_dir"
+          install -d -m 0700 "$metadata_dir"
+          marker="$metadata_dir/image.json"
+          provenance="$metadata_dir/source-provenance.json"
+          docker cp "$container_id:/opt/prebuilt_ws/.moveit-pro-ci-image.json" "$marker"
+          docker cp \
+            "$container_id:/opt/prebuilt_ws/.moveit-pro-ci-source-provenance.json" \
+            "$provenance"
+          python3 - \
+            "$marker" "$provenance" "$EXPECTED_SOURCE_SHA" "$ROS_DISTRO" \
+            "$EXPECTED_BASE_IMAGE_REF" "$GITHUB_REPOSITORY" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import re
+          import stat
+          import sys
+
+          marker_path = pathlib.Path(sys.argv[1])
+          provenance_path = pathlib.Path(sys.argv[2])
+          for path in (marker_path, provenance_path):
+              metadata = path.lstat()
+              if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+                  raise SystemExit("workspace image metadata is not a regular file")
+              if metadata.st_size > 1024 * 1024:
+                  raise SystemExit("workspace image metadata exceeds size limit")
+          marker = json.loads(marker_path.read_text(encoding="utf-8"))
+          provenance_bytes = provenance_path.read_bytes()
+          provenance_sha256 = hashlib.sha256(provenance_bytes).hexdigest()
+          expected_marker = {
+              "schema_version": 1,
+              "source_sha": sys.argv[3],
+              "ros_distro": sys.argv[4],
+              "base_image_ref": sys.argv[5],
+              "source_provenance_sha256": provenance_sha256,
+          }
+          if marker != expected_marker:
+              raise SystemExit("workspace image metadata mismatch")
+          provenance = json.loads(provenance_bytes)
+          if provenance.get("schema_version") != 1:
+              raise SystemExit("unsupported source provenance schema")
+          expected_fields = {
+              "source_repository": sys.argv[6],
+              "source_sha": sys.argv[3],
+              "ros_distro": sys.argv[4],
+              "base_image_ref": sys.argv[5],
+          }
+          for field, expected_value in expected_fields.items():
+              if provenance.get(field) != expected_value:
+                  raise SystemExit(f"source provenance {field} mismatch")
+          submodules = provenance.get("submodules")
+          lfs_objects = provenance.get("lfs_objects")
+          if not isinstance(submodules, list) or not isinstance(lfs_objects, list):
+              raise SystemExit("source provenance inventories must be lists")
+          for submodule in submodules:
+              if (
+                  not isinstance(submodule, dict)
+                  or not isinstance(submodule.get("path"), str)
+                  or not re.fullmatch(r"[0-9a-f]{40}", str(submodule.get("sha", "")))
+              ):
+                  raise SystemExit("invalid submodule provenance record")
+          for lfs_object in lfs_objects:
+              if not isinstance(lfs_object, dict):
+                  raise SystemExit("invalid git-lfs provenance record")
+              oid = lfs_object.get("oid_sha256")
+              materialized_sha256 = lfs_object.get("materialized_sha256")
+              if (
+                  not re.fullmatch(r"[0-9a-f]{64}", str(oid or ""))
+                  or materialized_sha256 != oid
+                  or not isinstance(lfs_object.get("size"), int)
+                  or lfs_object["size"] < 0
+              ):
+                  raise SystemExit("invalid git-lfs provenance record")
+          PY
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+  licensed-workspace-tests:
+    needs: preflight-workspace-image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Prepare validated test inputs
+        env:
+          COLCON_TEST_ARGS_JSON: ${{ inputs.colcon_test_args_json }}
+          TEST_PACKAGES_JSON: ${{ inputs.test_packages_json }}
+        run: |
+          set -euo pipefail
+          input_dir="$RUNNER_TEMP/moveit-pro-ci-input"
+          test_args_file="$input_dir/test-args.nul"
+          test_packages_file="$input_dir/test-packages.nul"
+          packages_text_file="$input_dir/test-packages.txt"
+          rm -rf "$input_dir" "$RUNNER_TEMP/moveit-pro-ci-raw" \
+            "$RUNNER_TEMP/moveit-pro-ci-staging" "$RUNNER_TEMP/moveit-pro-ci-upload"
+          mkdir -p "$input_dir"
+          python3 - "$test_args_file" "$test_packages_file" "$packages_text_file" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          test_args = json.loads(os.environ["COLCON_TEST_ARGS_JSON"])
+          test_packages = json.loads(os.environ["TEST_PACKAGES_JSON"])
+          if not isinstance(test_args, list) or not all(
+              isinstance(item, str) for item in test_args
+          ):
+              raise SystemExit("colcon_test_args_json must be a JSON array of strings")
+          if not isinstance(test_packages, list) or not test_packages or not all(
+              isinstance(item, str) for item in test_packages
+          ):
+              raise SystemExit("test_packages_json must be a non-empty JSON array of strings")
+          if any("\0" in item for item in test_args):
+              raise SystemExit("colcon_test_args_json entries cannot contain NUL bytes")
+          if not all(re.fullmatch(r"[A-Za-z0-9_]+", item) for item in test_packages):
+              raise SystemExit("test_packages_json contains an invalid ROS package name")
+          pathlib.Path(sys.argv[1]).write_bytes(
+              b"".join(item.encode() + b"\0" for item in test_args)
+          )
+          pathlib.Path(sys.argv[2]).write_bytes(
+              b"".join(item.encode() + b"\0" for item in test_packages)
+          )
+          pathlib.Path(sys.argv[3]).write_text(
+              "".join(item + "\n" for item in test_packages), encoding="utf-8"
+          )
+          PY
+          cat > "$input_dir/cyclonedds.xml" <<'EOF'
+          <?xml version="1.0" ?>
+          <CycloneDDS xmlns="https://cdds.io/config">
+            <Domain id="any">
+              <General>
+                <Interfaces><NetworkInterface autodetermine="true"/></Interfaces>
+                <AllowMulticast>false</AllowMulticast>
+              </General>
+              <Discovery>
+                <ParticipantIndex>auto</ParticipantIndex>
+                <Peers><Peer Address="127.0.0.1" /></Peers>
+                <MaxAutoParticipantIndex>50</MaxAutoParticipantIndex>
+              </Discovery>
+            </Domain>
+          </CycloneDDS>
+          EOF
+          cat > "$input_dir/run-tests.sh" <<'TEST_SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd /opt/prebuilt_ws
+          set +u;
+          # shellcheck source=/dev/null
+          source "/opt/ros/${ROS_DISTRO}/setup.sh"
+          source /opt/overlay_ws/install/setup.sh
+          source ./install/setup.sh
+          set -u;
+          mapfile -d '' -t test_args < /moveit-pro-ci-input/test-args.nul
+          mapfile -d '' -t test_packages < /moveit-pro-ci-input/test-packages.nul
+          all_packages_file="$(mktemp)"
+          external_packages_file="$(mktemp)"
+          colcon list --names-only > "$all_packages_file"
+          colcon list --base-paths src/external_dependencies --names-only \
+            > "$external_packages_file"
+          declare -A all_package_set=()
+          declare -A external_package_set=()
+          while IFS= read -r package; do
+            [[ -n "$package" ]] && all_package_set["$package"]=1
+          done < "$all_packages_file"
+          while IFS= read -r package; do
+            [[ -n "$package" ]] && external_package_set["$package"]=1
+          done < "$external_packages_file"
+          for package in "${test_packages[@]}"; do
+            if [[ -z "${all_package_set[$package]+present}" ]]; then
+              echo "::error::unknown requested test package: $package"
+              exit 2
+            fi
+            if [[ -n "${external_package_set[$package]+present}" ]]; then
+              echo "::error::requested external dependency package is not eligible: $package"
+              exit 2
+            fi
+          done
+          package_args=(--packages-select "${test_packages[@]}")
+          skip_args=()
+          mapfile -t external_package_array < "$external_packages_file"
+          if (( ${#external_package_array[@]} > 0 )); then
+            skip_args=(--packages-skip "${external_package_array[@]}")
+          fi
+          set +e
+          colcon test "${skip_args[@]}" "${package_args[@]}" "${test_args[@]}"
+          test_status=$?
+          colcon test-result --verbose
+          result_status=$?
+          set -e
+          if [[ $test_status -ne 0 ]]; then
+            exit "$test_status"
+          fi
+          exit "$result_status"
+          TEST_SCRIPT
+          chmod 0555 "$input_dir/run-tests.sh"
+
+      - name: Run licensed tests in verified image
+        id: tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ needs.preflight-workspace-image.outputs.image_ref }}
+          MOVEIT_LICENSE_KEY: ${{ secrets.moveit_license_key }}
+          ROS_DISTRO: ${{ inputs.ros_distro }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker pull "$IMAGE_REF"
+          container_name="moveit-pro-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container_id="$(docker create \
+            --name "$container_name" \
+            --env MOVEIT_LICENSE_KEY \
+            --env ROS_DISTRO \
+            --env RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+            --env CYCLONEDDS_URI=/moveit-pro-ci-input/cyclonedds.xml \
+            --mount "type=bind,source=$RUNNER_TEMP/moveit-pro-ci-input,target=/moveit-pro-ci-input,readonly" \
+            --entrypoint bash \
+            "$IMAGE_REF" /moveit-pro-ci-input/run-tests.sh)"
+          echo "container_id=$container_id" >> "$GITHUB_OUTPUT"
+          set +e
+          docker start --attach "$container_id"
+          test_status=$?
+          set -e
+          echo "test_status=$test_status" >> "$GITHUB_OUTPUT"
+          exit "$test_status"
+
+      - name: Extract diagnostics from stopped test container
+        id: extract
+        if: always() && steps.tests.outputs.container_id != ''
+        env:
+          CONTAINER_ID: ${{ steps.tests.outputs.container_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER_ID")" != "false" ]]; then
+            echo "::error::Refusing to extract artifacts from a running test container"
+            exit 2
+          fi
+          raw_dir="$RUNNER_TEMP/moveit-pro-ci-raw"
+          mkdir -p "$raw_dir/build"
+          while IFS= read -r package; do
+            for leaf in test_results Testing; do
+              destination="$raw_dir/build/$package/$leaf"
+              mkdir -p "$destination"
+              if ! docker cp \
+                "$CONTAINER_ID:/opt/prebuilt_ws/build/$package/$leaf/." \
+                "$destination/" 2>/dev/null; then
+                rmdir "$destination" 2>/dev/null || true
+              fi
+            done
+          done < "$RUNNER_TEMP/moveit-pro-ci-input/test-packages.txt"
+
+      - name: Remove test container
+        id: remove
+        if: always() && steps.tests.outputs.container_id != ''
+        env:
+          CONTAINER_ID: ${{ steps.tests.outputs.container_id }}
+        run: docker rm -f "$CONTAINER_ID"
+
+      - name: Sanitize diagnostic artifacts into immutable archive
+        id: sanitize
+        if: always() && steps.extract.outcome == 'success' && steps.remove.outcome == 'success'
+        env:
+          MOVEIT_LICENSE_KEY: ${{ secrets.moveit_license_key }}
+        run: |
+          set -euo pipefail
+          raw_dir="$RUNNER_TEMP/moveit-pro-ci-raw"
+          staging="$RUNNER_TEMP/moveit-pro-ci-staging"
+          upload_dir="$RUNNER_TEMP/moveit-pro-ci-upload"
+          rm -rf "$staging" "$upload_dir"
+          mkdir -p "$staging" "$upload_dir"
+          trap 'rm -rf "$staging" "$upload_dir"' ERR
+          python3 - "$raw_dir" "$staging" "$upload_dir/diagnostics.tar.gz" <<'PY'
+          import gzip
+          import os
+          import pathlib
+          import shutil
+          import tarfile
+          import sys
+
+          raw = pathlib.Path(sys.argv[1])
+          staging = pathlib.Path(sys.argv[2])
+          archive = pathlib.Path(sys.argv[3])
+          allowed = {".json", ".log", ".txt", ".xml", ".yaml", ".yml"}
+          secret_text = os.environ.get("MOVEIT_LICENSE_KEY", "")
+          secret = secret_text.encode()
+          if not secret:
+              raise SystemExit("MOVEIT_LICENSE_KEY is empty during artifact sanitization")
+          maximum_file_size = 300 * 1024 * 1024
+          maximum_total_size = 1024 * 1024 * 1024
+          total = 0
+          copied = 0
+          if raw.is_symlink() or not raw.is_dir():
+              raise SystemExit("raw artifact root is missing or unsafe")
+          for source in sorted(raw.rglob("*")):
+              relative = source.relative_to(raw)
+              if any(secret_text in part for part in relative.parts):
+                  raise SystemExit(f"license secret found in diagnostic artifact path: {relative}")
+              if source.is_symlink():
+                  raise SystemExit(f"artifact path is a symlink: {relative}")
+              if not source.is_file() or source.suffix.lower() not in allowed:
+                  continue
+              size = source.stat().st_size
+              if size > maximum_file_size:
+                  raise SystemExit(f"artifact exceeds per-file limit: {relative}")
+              total += size
+              if total > maximum_total_size:
+                  raise SystemExit("diagnostic artifacts exceed total size limit")
+              data = source.read_bytes()
+              if secret in data:
+                  raise SystemExit(f"license secret found in diagnostic artifact: {relative}")
+              destination = staging / relative
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_bytes(data)
+              copied += 1
+          if copied == 0:
+              raise SystemExit("no sanitized diagnostic artifacts were found")
+
+          with archive.open("wb") as archive_stream:
+              with gzip.GzipFile(fileobj=archive_stream, mode="wb", mtime=0) as gzip_stream:
+                  with tarfile.open(fileobj=gzip_stream, mode="w") as tar:
+                      for source in sorted(staging.rglob("*")):
+                          if not source.is_file():
+                              continue
+                          relative = source.relative_to(staging)
+                          info = tar.gettarinfo(str(source), arcname=str(relative))
+                          info.uid = 0
+                          info.gid = 0
+                          info.uname = ""
+                          info.gname = ""
+                          info.mtime = 0
+                          with source.open("rb") as stream:
+                              tar.addfile(info, stream)
+          if secret in archive.read_bytes():
+              raise SystemExit("license secret found in finalized diagnostic archive")
+          archive.chmod(0o444)
+          PY
+          echo "archive_path=$upload_dir/diagnostics.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sanitized test and regression artifacts
+        if: always() && steps.remove.outcome == 'success' && steps.sanitize.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ steps.sanitize.outputs.archive_path }}
+          if-no-files-found: error
+          retention-days: 15

@@ -86,6 +86,7 @@ jobs:
       ros_distro: humble
       base_image_ref: picknikciuser/moveit-studio@sha256:<reviewed-humble-digest>
       config_package: autowash_config
+      image_package_suffix: primary-ci-workspace
       colcon_build_args_json: >-
         ["--cmake-args", "-DAUTOWASH_CI_MOCK_BUILD=ON"]
 
@@ -102,6 +103,7 @@ jobs:
       expected_source_sha: ${{ needs.build.outputs.source_sha }}
       expected_base_image_ref: picknikciuser/moveit-studio@sha256:<reviewed-humble-digest>
       builder_workflow_sha: <same-commit-sha>
+      image_package_suffix: primary-ci-workspace
       test_packages_json: '["autowash_config"]'
       colcon_test_args_json: '["--ctest-args", "-R", "wash_quality_regression"]'
       artifact_name: wash-quality-humble
@@ -109,7 +111,11 @@ jobs:
       moveit_license_key: ${{ secrets.MOVEIT_LICENSE_KEY }}
 ```
 
-Use one build job and fan out as many consumer jobs as needed. Consumers reject mutable image
+Use one build job and fan out as many consumer jobs as needed. Producer and consumer must use
+the same `image_package_suffix`. Use a different suffix for build variants that can run at the
+same source SHA; this prevents distinct configurations from racing on one package/tag. The
+producer creates a pinned `docker-container` Buildx builder so OCI provenance and SBOM
+attestations are supported on GitHub-hosted runners. Consumers reject mutable image
 or base tags, the wrong caller-owned package, mismatched source/base/ROS metadata, unsigned
 images, the wrong signer workflow or signer commit, self-hosted builders, and non-private
 packages. `workspace_test_image.yaml` deliberately does not retry failed tests; deterministic
@@ -122,11 +128,14 @@ protected-branch `push`, schedule, or manual dispatch can use them. Do not place
 or license-bearing callers in workflows that check out untrusted source.
 
 The derived image includes caller source, build, and install trees. The package path is fixed to
-`ghcr.io/<caller-owner>/<caller-repository>-workspace`, and both producer and consumer require
+`ghcr.io/<caller-owner>/r<repository-id>-<caller-repository>-<validated-suffix>` (suffix defaults to `workspace`),
+and both producer and consumer require
 private visibility. If the package does not yet exist, the producer first pushes a content-free
 `scratch` image tagged `privacy-bootstrap` and verifies that GitHub created the package as
-private before any customer source is published. API failures other than an explicit 404 fail
-closed. Keep the harmless bootstrap tag and configure cleanup for per-commit tags. The workspace
+private before any customer source is published. The producer performs a bounded metadata retry
+only after its own bootstrap push to accommodate GHCR propagation; initial API failures other
+than an explicit 404 and exhausted retries fail closed. Keep the harmless bootstrap tag and
+configure cleanup for per-commit tags. The workspace
 image embeds a deterministic,
 hash-bound source manifest containing the top-level commit, every recursive submodule commit,
 every Git LFS OID plus materialized payload SHA-256/size, the base image digest, and ROS distro.
@@ -136,7 +145,7 @@ digest identifies the exact image that was actually tested.
 
 Production rollout is gated on caller-owned cleanup. The required policy is: tag each image only
 as `sha-<40-hex-source>-<ros-distro>`; consume only its digest; on pull-request close, enumerate
-the fixed caller package and delete only a version carrying exactly that head tag after a 24-hour
+the configured caller package suffixes and delete only a version carrying exactly that head tag after a 24-hour
 diagnostic window; and run a scheduled sweep for untagged versions older than 15 days. Cleanup
 must fail closed if a version has another tag, the package path differs, or the PR head is not a
 full SHA. The initial reusable build/test change does not delete package versions automatically.

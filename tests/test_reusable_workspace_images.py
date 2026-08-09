@@ -50,7 +50,13 @@ def test_build_workflow_exports_attested_caller_owned_image_without_license() ->
     assert "git_ref:" not in text
     assert "runner:" not in text
     assert "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9" in text
-    assert "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8" in text
+    setup_buildx = "docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd"
+    build_push = "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8"
+    assert setup_buildx in text
+    assert "driver: docker-container" in text
+    assert "image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec" in text
+    assert build_push in text
+    assert text.index(setup_buildx) < text.index(build_push)
     assert "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a" in text
     assert "push-to-registry: true" in text
     assert 'echo "image_ref=${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"' in text
@@ -61,7 +67,26 @@ def test_build_workflow_exports_attested_caller_owned_image_without_license() ->
     assert "visibility" in text and '!= "private"' in text
     assert "privacy-bootstrap" in text
     assert "HTTP 404" in text
+    assert "package_absent" in text
+    assert "for attempt in {1..6}" in text
     assert "Unable to determine workspace package visibility" in text
+    assert "image_package_suffix:" in text
+    assert "INPUT_IMAGE_PACKAGE_SUFFIX" in text
+    assert "CALLER_REPOSITORY_ID: ${{ github.repository_id }}" in text
+    assert "caller repository ID is unavailable" in text
+    assert 'package_name="r${CALLER_REPOSITORY_ID}-${caller_repository}-${INPUT_IMAGE_PACKAGE_SUFFIX}"' in text
+    assert "image_package_suffix contains unsupported characters" in text
+
+
+def test_package_identity_is_collision_safe_across_repositories() -> None:
+    """Repository ID prevents ambiguous repository/suffix package capture."""
+
+    def package(repository: str, repository_id: int, suffix: str) -> str:
+        return f"r{repository_id}-{repository.lower()}-{suffix}"
+
+    assert package("foo-bar", 101, "workspace") != package("foo", 202, "bar-workspace")
+    assert package("foo", 101, "workspace") != package("foo", 202, "workspace")
+    assert package("foo-r1", 2, "workspace") != package("foo", 1, "r2-workspace")
 
 
 def test_build_source_is_trusted_complete_and_credential_free() -> None:
@@ -127,6 +152,12 @@ def test_test_workflow_preflights_attestation_before_license_exposure() -> None:
     assert "Unsupported caller event" in text
     assert "push|workflow_dispatch|schedule" in text
     assert "expected_repository=" in text
+    assert "image_package_suffix:" in text
+    assert "INPUT_IMAGE_PACKAGE_SUFFIX" in text
+    assert "CALLER_REPOSITORY_ID: ${{ github.repository_id }}" in text
+    assert "caller repository ID is unavailable" in text
+    assert 'package_name="r${CALLER_REPOSITORY_ID}-${caller_repository}-${INPUT_IMAGE_PACKAGE_SUFFIX}"' in text
+    assert "image_package_suffix contains unsupported characters" in text
     assert "ghcr.io/" in text
     assert 'image_repository="${IMAGE_REF%@sha256:*}"' in text
     assert '[[ "$image_repository" != "$expected_repository"' in text

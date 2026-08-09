@@ -35,6 +35,10 @@ on:
         description: Unique artifact name for this consumer job.
         type: string
         required: true
+      image_package_suffix:
+        description: Caller-owned GHCR package suffix selected by the producer.
+        type: string
+        default: workspace
     secrets:
       moveit_license_key:
         required: true
@@ -81,6 +85,8 @@ jobs:
           EXPECTED_BASE_IMAGE_REF: ${{ inputs.expected_base_image_ref }}
           BUILDER_WORKFLOW_SHA: ${{ inputs.builder_workflow_sha }}
           ROS_DISTRO: ${{ inputs.ros_distro }}
+          INPUT_IMAGE_PACKAGE_SUFFIX: ${{ inputs.image_package_suffix }}
+          CALLER_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           if [[ ! "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -99,9 +105,19 @@ jobs:
             echo "::error::ros_distro contains unsupported characters"
             exit 2
           fi
+          if [[ ! "$INPUT_IMAGE_PACKAGE_SUFFIX" =~ ^[a-z0-9]$ && ! "$INPUT_IMAGE_PACKAGE_SUFFIX" =~ ^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$ ]]; then
+            echo "::error::image_package_suffix contains unsupported characters"
+            exit 2
+          fi
+          if [[ ! "$CALLER_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::caller repository ID is unavailable"
+            exit 2
+          fi
 
           caller_repository="${GITHUB_REPOSITORY#*/}"
-          expected_repository="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${caller_repository}-workspace"
+          package_name="r${CALLER_REPOSITORY_ID}-${caller_repository}-${INPUT_IMAGE_PACKAGE_SUFFIX}"
+          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
+          expected_repository="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${package_name}"
           expected_repository="$(printf '%s' "$expected_repository" | tr '[:upper:]' '[:lower:]')"
           image_repository="${IMAGE_REF%@sha256:*}"
           image_digest="${IMAGE_REF#*@}"
@@ -111,8 +127,6 @@ jobs:
           fi
 
           owner_type="$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.type)"
-          package_name="${caller_repository}-workspace"
-          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
           if [[ "$owner_type" == "Organization" ]]; then
             endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
           else

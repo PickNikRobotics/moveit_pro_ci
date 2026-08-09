@@ -23,6 +23,10 @@ on:
         description: Fetch Git LFS objects in the caller repository and all submodules.
         type: boolean
         default: true
+      image_package_suffix:
+        description: Caller-owned GHCR package suffix used to isolate build variants.
+        type: string
+        default: workspace
     outputs:
       image_ref:
         description: Immutable derived image reference in repository@sha256 form.
@@ -87,6 +91,8 @@ jobs:
           INPUT_CONFIG_PACKAGE: ${{ inputs.config_package }}
           INPUT_ROS_DISTRO: ${{ inputs.ros_distro }}
           INPUT_COLCON_BUILD_ARGS_JSON: ${{ inputs.colcon_build_args_json }}
+          INPUT_IMAGE_PACKAGE_SUFFIX: ${{ inputs.image_package_suffix }}
+          CALLER_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           if [[ ! "$INPUT_BASE_IMAGE_REF" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
@@ -99,6 +105,14 @@ jobs:
           fi
           if [[ -n "$INPUT_CONFIG_PACKAGE" && ! "$INPUT_CONFIG_PACKAGE" =~ ^[A-Za-z0-9_]+$ ]]; then
             echo "::error::config_package is not a ROS package name"
+            exit 2
+          fi
+          if [[ ! "$INPUT_IMAGE_PACKAGE_SUFFIX" =~ ^[a-z0-9]$ && ! "$INPUT_IMAGE_PACKAGE_SUFFIX" =~ ^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$ ]]; then
+            echo "::error::image_package_suffix contains unsupported characters"
+            exit 2
+          fi
+          if [[ ! "$CALLER_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::caller repository ID is unavailable"
             exit 2
           fi
 
@@ -123,7 +137,9 @@ jobs:
             exit 2
           fi
           caller_repository="${GITHUB_REPOSITORY#*/}"
-          image_repository="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${caller_repository}-workspace"
+          package_name="r${CALLER_REPOSITORY_ID}-${caller_repository}-${INPUT_IMAGE_PACKAGE_SUFFIX}"
+          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
+          image_repository="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${package_name}"
           image_repository="$(printf '%s' "$image_repository" | tr '[:upper:]' '[:lower:]')"
           image_tag="sha-${source_sha}-${INPUT_ROS_DISTRO}"
 
@@ -131,6 +147,7 @@ jobs:
             echo "base_image=$INPUT_BASE_IMAGE_REF"
             echo "build_args_json_b64=$build_args_json_b64"
             echo "image_repository=$image_repository"
+            echo "package_name=$package_name"
             echo "image_tag=$image_tag"
             echo "source_sha=$source_sha"
           } >> "$GITHUB_OUTPUT"
@@ -248,15 +265,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_REPOSITORY: ${{ steps.prepare.outputs.image_repository }}
+          PACKAGE_NAME: ${{ steps.prepare.outputs.package_name }}
         run: |
           set -euo pipefail
           owner_type="$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.type)"
-          package_name="${GITHUB_REPOSITORY#*/}-workspace"
-          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
           if [[ "$owner_type" == "Organization" ]]; then
-            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$PACKAGE_NAME"
           else
-            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$PACKAGE_NAME"
           fi
 
           metadata_file="$(mktemp)"
@@ -281,7 +297,22 @@ jobs:
             docker push "$IMAGE_REPOSITORY:privacy-bootstrap"
           fi
 
-          if ! visibility="$(gh api "$endpoint" --jq .visibility 2>/dev/null)"; then
+          visibility=""
+          if [[ "$package_absent" == true ]]; then
+            # GHCR package metadata is eventually consistent after the first push.
+            for attempt in {1..6}; do
+              if visibility="$(gh api "$endpoint" --jq .visibility 2>/dev/null)"; then
+                break
+              fi
+              if (( attempt < 6 )); then
+                sleep $((attempt * 2))
+              fi
+            done
+          elif ! visibility="$(gh api "$endpoint" --jq .visibility 2>/dev/null)"; then
+            echo "::error::Unable to determine workspace package visibility"
+            exit 2
+          fi
+          if [[ -z "$visibility" ]]; then
             echo "::error::Unable to determine workspace package visibility"
             exit 2
           fi
@@ -349,6 +380,12 @@ jobs:
           LABEL org.opencontainers.image.revision=${SOURCE_SHA}
           DOCKERFILE
 
+      - name: Set up attestation-capable Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        with:
+          driver: docker-container
+          driver-opts: image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+
       - name: Build and push workspace image
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -381,15 +418,14 @@ jobs:
       - name: Require private package visibility after publication
         env:
           GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ steps.prepare.outputs.package_name }}
         run: |
           set -euo pipefail
           owner_type="$(gh api "repos/$GITHUB_REPOSITORY" --jq .owner.type)"
-          package_name="${GITHUB_REPOSITORY#*/}-workspace"
-          package_name="$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')"
           if [[ "$owner_type" == "Organization" ]]; then
-            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+            endpoint="orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$PACKAGE_NAME"
           else
-            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name"
+            endpoint="users/$GITHUB_REPOSITORY_OWNER/packages/container/$PACKAGE_NAME"
           fi
           visibility="$(gh api "$endpoint" --jq .visibility)"
           if [[ "$visibility" != "private" ]]; then

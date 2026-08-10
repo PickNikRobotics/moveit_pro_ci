@@ -110,6 +110,13 @@ jobs:
       MOVEIT_DOCKER_TAG: ${{ inputs.image_tag }}-${{ matrix.ros_distro }}
       # We always need to test in mocked hardware
       MOVEIT_CONFIG_PACKAGE: ${{ inputs.config_package }}
+      # MoveIt Pro 10.0 binds a license to machine-unique hardware -- a TPM, else
+      # a permanent NIC -- and fails to activate with neither. Build runners
+      # typically expose neither, so point the fingerprint at the synthetic sysfs
+      # tree built in the first step below. The MAC there is fixed so the whole
+      # runner fleet shares one identity, rather than each ephemeral runner
+      # consuming its own license activation.
+      MOVEIT_HOST_SYSFS: /tmp/moveit_pro_ci_sysfs
     container:
       # `image_ref` (when set) is a template formatted with the matrix ROS
       # distro — the dispatched-from-sister-repo path that pulls a PR-specific
@@ -124,6 +131,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # Must run before anything that starts MoveIt Pro. See MOVEIT_HOST_SYSFS above.
+      - name: Provide a hardware identity for license activation
+        run: |
+          interface="${MOVEIT_HOST_SYSFS}/class/net/eth0"
+          mkdir -p "${interface}/device"
+          echo 'd4:93:90:2d:8f:9b' > "${interface}/address"
+          echo 1 > "${interface}/type"
+          echo 0 > "${interface}/addr_assign_type"
+
       - name: Check if config package specified
         id: check_config_package
         run: |

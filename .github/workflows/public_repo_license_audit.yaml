@@ -1,0 +1,45 @@
+name: Public Repository License Audit
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/public_repo_license_audit.yaml
+      - scripts/audit_public_repo_licenses.sh
+      - scripts/public_repo_license_findings.jq
+      - scripts/test_audit_public_repo_licenses.py
+  schedule:
+    - cron: "17 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-repository-license-audit
+  cancel-in-progress: false
+
+jobs:
+  pull-request-audit:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Test public repository license audit
+        run: python3 -m unittest -v scripts/test_audit_public_repo_licenses.py
+
+  scheduled-audit:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Audit public repository licenses and update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/audit_public_repo_licenses.sh --update-issue

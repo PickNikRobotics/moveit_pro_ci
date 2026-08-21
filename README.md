@@ -68,3 +68,15 @@ Composite action that lists the calling repository's branches and outputs the hi
   run: echo "Release branch is ${{ steps.get_current_release_branch.outputs.branch }}"
 ```
 Pin by commit SHA for reproducibility.
+
+## Public repository license audit
+
+`public_repo_license_audit.yaml` runs every Monday and can also be dispatched manually. It fails closed when either organization API cannot be read, then checks every public, active, non-fork repository in `PickNikRobotics` and `PickNikRoboticsServices` for a root license that GitHub detects as a recognized SPDX license.
+
+If a repository has no detected license or GitHub reports `NOASSERTION`, the workflow fails and creates or updates one tracking issue in this repository. The issue body is machine-owned and replaced on every run, so human review notes and repository dispositions belong in comments. The issue closes automatically after all findings are resolved. Pull requests that change the audit run its mock API test suite without mutating issues.
+
+Run the same check locally with an authenticated GitHub CLI:
+
+```bash
+GH_TOKEN=<token> scripts/audit_public_repo_licenses.sh --check-only
+```

@@ -24,6 +24,7 @@ class PublicRepositoryLicenseAuditTest(unittest.TestCase):
                 import json
                 import os
                 from pathlib import Path
+                import subprocess
                 import sys
 
                 arguments = sys.argv[1:]
@@ -40,7 +41,18 @@ class PublicRepositoryLicenseAuditTest(unittest.TestCase):
                         missing = json.loads(os.environ.get("MOCK_MISSING", "{}"))
                         print("\\n".join(missing.get(organization, [])))
                     elif "/issues?" in endpoint:
-                        print(os.environ.get("MOCK_ISSUE_NUMBER", ""))
+                        query = arguments[arguments.index("--jq") + 1]
+                        result = subprocess.run(
+                            ["jq", "-r", query],
+                            check=False,
+                            capture_output=True,
+                            input=os.environ.get("MOCK_ISSUES", "[]"),
+                            text=True,
+                        )
+                        print(result.stdout, end="")
+                        if result.returncode != 0:
+                            print(result.stderr, end="", file=sys.stderr)
+                            raise SystemExit(result.returncode)
                     else:
                         raise SystemExit(f"Unexpected API endpoint: {endpoint}")
                 elif arguments[:2] == ["issue", "create"] or arguments[:2] == ["issue", "edit"]:
@@ -165,22 +177,69 @@ class PublicRepositoryLicenseAuditTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         log = self.read_log()
         self.assertIn('["issue", "create"', log)
+        self.assertIn("<!-- moveit-pro-ci-public-license-audit -->", log)
         self.assertIn("[written by AI]", log)
         self.assertIn("- [ ] [PickNikRobotics/example]", log)
         self.assertIn("machine-owned body is replaced on every run", log)
         self.assertIn("record review notes and dispositions in issue comments", log)
 
     def test_update_mode_closes_existing_issue_after_remediation(self) -> None:
-        result = self.run_audit("--update-issue", MOCK_ISSUE_NUMBER="42")
+        issues = [
+            {
+                "number": 42,
+                "title": "Public repositories missing detected licenses",
+                "body": "<!-- moveit-pro-ci-public-license-audit -->\n[written by AI]",
+                "pull_request": None,
+            }
+        ]
+        result = self.run_audit("--update-issue", MOCK_ISSUES=json.dumps(issues))
         self.assertEqual(result.returncode, 0, result.stderr)
         log = self.read_log()
         self.assertIn('["issue", "comment", "42"', log)
         self.assertIn('["issue", "close", "42"', log)
 
     def test_update_mode_fails_on_duplicate_tracking_issues(self) -> None:
-        result = self.run_audit("--update-issue", MOCK_ISSUE_NUMBER="42\n43")
+        issues = [
+            {
+                "number": number,
+                "title": "Public repositories missing detected licenses",
+                "body": "<!-- moveit-pro-ci-public-license-audit -->",
+                "pull_request": None,
+            }
+            for number in (42, 43)
+        ]
+        result = self.run_audit("--update-issue", MOCK_ISSUES=json.dumps(issues))
         self.assertEqual(result.returncode, 2)
         self.assertIn("multiple open tracking issues", result.stderr)
+
+    def test_update_mode_does_not_mutate_same_title_human_issue(self) -> None:
+        missing = {"PickNikRobotics": ["PickNikRobotics/example"]}
+        issues = [
+            {
+                "number": 42,
+                "title": "Public repositories missing detected licenses",
+                "body": body,
+                "pull_request": None,
+            }
+            for body in (None, "Human-authored issue body")
+        ]
+        result = self.run_audit(
+            "--update-issue",
+            MOCK_MISSING=json.dumps(missing),
+            MOCK_ISSUES=json.dumps(issues),
+        )
+        self.assertEqual(result.returncode, 1)
+        log = self.read_log()
+        self.assertIn('["issue", "create"', log)
+        self.assertNotIn('["issue", "edit", "42"', log)
+        self.assertNotIn('["issue", "comment", "42"', log)
+        self.assertNotIn('["issue", "close", "42"', log)
+
+        clean_result = self.run_audit("--update-issue", MOCK_ISSUES=json.dumps(issues))
+        self.assertEqual(clean_result.returncode, 0)
+        clean_log = self.read_log()
+        self.assertNotIn('["issue", "comment", "42"', clean_log)
+        self.assertNotIn('["issue", "close", "42"', clean_log)
 
 
 if __name__ == "__main__":

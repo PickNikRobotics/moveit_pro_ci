@@ -4,6 +4,7 @@ set -euo pipefail
 readonly ORGANIZATIONS=(PickNikRobotics PickNikRoboticsServices)
 readonly TRACKING_REPO="${TRACKING_REPO:-PickNikRobotics/moveit_pro_ci}"
 readonly ISSUE_TITLE="Public repositories missing detected licenses"
+readonly ISSUE_MARKER="<!-- moveit-pro-ci-public-license-audit -->"
 readonly MODE="${1:---check-only}"
 if ! SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"; then
   echo "::error::Unable to resolve the audit script directory." >&2
@@ -65,7 +66,7 @@ fi
 
 if ! issue_output="$(
   gh api --paginate "/repos/${TRACKING_REPO}/issues?state=open&per_page=100" \
-    --jq ".[] | select(.pull_request == null and .title == \"${ISSUE_TITLE}\") | .number"
+    --jq ".[] | select(.pull_request == null and .title == \"${ISSUE_TITLE}\" and ((.body // \"\") | contains(\"${ISSUE_MARKER}\"))) | .number"
 )"; then
   echo "::error::Unable to query the tracking issue." >&2
   exit 2
@@ -95,6 +96,7 @@ fi
 body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT
 {
+  echo "$ISSUE_MARKER"
   echo "[written by AI]"
   echo
   echo "The scheduled license audit found public, active, non-fork repositories whose root license is missing or not recognized by GitHub:"

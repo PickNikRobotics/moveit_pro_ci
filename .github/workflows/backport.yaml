@@ -1,7 +1,7 @@
 name: Backport merged pull request
 
-# Reusable backport workflow shared by the MoveIt Pro repositories. The caller
-# owns the triggers, which must be exactly:
+# Reusable backport workflow for the MoveIt Pro repositories. The caller
+# declares the triggers:
 #
 #   on:
 #     pull_request_target:
@@ -9,19 +9,17 @@ name: Backport merged pull request
 #     issue_comment:
 #       types: [created]
 #
-# The `github` context in a called workflow is the caller's, so the job-level
-# `if:` below reads the caller's event and every git operation targets the
-# caller's repository.
+# A called workflow sees the caller's `github` context, so the job `if:` reads
+# the caller's event and git operations target the caller's repository.
 on:
   workflow_call:
     inputs:
       description_preamble:
         description: >
-          Markdown inserted into the generated PR body after the
-          "Backport of #N" line and before the copied Release notes section.
-          Use it for anything the caller's PR-description check requires. The
-          action's `${pull_number}` and `${target_branch}` placeholders are
-          substituted here too.
+          Markdown placed in the PR body between the "Backport of #N" line
+          and the copied Release notes section, for anything the caller's
+          PR-description check requires. The action fills in
+          `${pull_number}` and `${target_branch}` here too.
         type: string
         default: ""
     secrets:
@@ -32,10 +30,8 @@ on:
         description: Private key of the GitHub App that opens the backport PRs.
         required: true
 
-# All operations in this workflow — including `actions/checkout` — flow
-# through a GitHub App installation token (see the `app-token` step), so
-# the default `GITHUB_TOKEN` only needs the minimum scope to satisfy the
-# Actions runner.
+# Every write uses the App token from the `app-token` step, so
+# GITHUB_TOKEN stays read-only.
 permissions:
   contents: read
 
@@ -44,15 +40,14 @@ jobs:
     name: Backport pull request
     runs-on: ubuntu-latest
 
-    # Job-level rather than workflow-level so that the many `issue_comment`
-    # runs this job skips never take a slot in the group.
+    # Set on the job so skipped `issue_comment` runs don't enter the group.
     concurrency:
       group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: false
 
-    # Run on merged PRs that carry a backport label (default `label_pattern` is `^backport ([^ ]+)$`),
-    # or on `/backport <branch>` comments posted on a merged pull request.
-    # The trailing space in `/backport ` avoids matching `/backporting`, `/backport-status`, etc.
+    # Runs for a merged PR with a `backport <branch>` label, or for a
+    # `/backport <branch>` comment on a merged PR. The trailing space keeps
+    # `/backporting` and similar from matching.
     if: >
       (
         github.event_name == 'pull_request_target' &&
@@ -66,25 +61,13 @@ jobs:
       )
 
     steps:
-      # The default `GITHUB_TOKEN` cannot push to `.github/workflows/` — the
-      # Actions App has no `workflows` write capability and the `permissions:`
-      # schema has no key to grant it. A GitHub App installation token does
-      # carry that capability, scoped to the App's installation and short-lived
-      # (~1 hour), so it replaces the previously-used PAT (`PRO_ACTION_USER`).
+      # GITHUB_TOKEN can't push changes under `.github/workflows/`, and a PR it
+      # opens triggers no workflows, so required checks never report and
+      # auto-merge waits forever. The App token avoids both.
       #
-      # Mint the App token before `actions/checkout` and pass it as the
-      # checkout token. Otherwise `actions/checkout` persists the workflow's
-      # read-only `GITHUB_TOKEN` in `http.<url>.extraheader` (in a temp config
-      # included at local scope). That header — which git sends on every
-      # subsequent push — overrides the App-token credentials that
-      # `korthout/backport-action` injects into its push URL, and GitHub
-      # honors the read-only extraheader and returns 403
-      # ("Write access to repository not granted").
-      #
-      # The App token is also what makes the generated PR's required checks run
-      # at all: a PR opened with `GITHUB_TOKEN` triggers no further workflows,
-      # so a required PR-description check would never report and — with
-      # `auto_merge_enabled` below — the backport would sit pending forever.
+      # Mint it before checkout and pass it in. Checkout stores its token in
+      # `http.<url>.extraheader`, which git sends on every push, and a read-only
+      # GITHUB_TOKEN there gets the action's push rejected with a 403.
       - name: Generate Token for backport
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -97,18 +80,13 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
 
-      # On the `/backport <branch>` comment path the action has no label to read,
-      # so parse the target branch out of the first line of the comment and feed
-      # it to the action via `target_branches`. Skipped for the label-triggered
-      # `pull_request_target` path, where the action's default `label_pattern`
-      # extracts the branch from the `backport <branch>` label name.
+      # The comment path has no label to read, so take the branch from the
+      # comment and pass it as `target_branches`. The label path skips this step.
       #
-      # Anyone who can comment on the PR can post `/backport`, which on a public
-      # caller is any GitHub account. The label path needs triage access, so
-      # require write access here before the App token pushes a branch. The
-      # legacy `permission` field folds `maintain` into `write`; it is listed
-      # anyway in case GitHub reports it directly. A commenter with no
-      # relationship to the repository may get a 404, which also rejects.
+      # Anyone who can comment can post `/backport`, which on a public repo means
+      # any GitHub account. Applying a label needs triage access, so require write
+      # access here. A user with no access to the repo gets a 404, which counts as
+      # no access.
       - name: Parse target branch from /backport comment
         id: parse-comment
         if: github.event_name == 'issue_comment'
@@ -133,9 +111,8 @@ jobs:
               return;
             }
 
-            // Take only the first token after `/backport ` so trailing text in the
-            // same comment (e.g. an explanation) doesn't get fed in as part of the
-            // branch name.
+            // Use only the first word after `/backport `, so an explanation later
+            // in the comment isn't read as part of the branch name.
             const match = context.payload.comment.body.match(/^\/backport\s+(\S+)/);
             if (!match) {
               core.setFailed('Expected `/backport <branch>` but found no target branch in the comment.');
@@ -145,31 +122,22 @@ jobs:
             core.info(`Parsed target branch from comment: ${branch}`);
             core.setOutput('branch', branch);
 
-      # The backport action only exposes the source PR's FULL body via its
-      # `${pull_description}` placeholder — there's no built-in way to copy just
-      # one section. Extract the `Release notes` section here so the action can
-      # append it to the generated backport PR description below (see the
-      # `pull_description` input). The section is everything from its header up
-      # to (but not including) the next same-or-higher markdown header or the
-      # next thematic break (`---`) — exactly where the PR template ends it,
-      # with the `---` separator before `## Claude agent checks`. The parser is
-      # fenced-code-block aware (a `## ...` or `---` inside a ``` fence is not a
-      # real header/break), strips the template's HTML-comment placeholder so an
-      # unfilled section yields nothing, and emits an empty string when the
-      # source PR has no Release notes content.
+      # The action can copy the source PR's whole body but not one section, so
+      # extract the Release notes section here. It runs from its heading to the
+      # next heading of the same or higher level, or the next `---`. Headings and
+      # breaks inside fenced code don't count. HTML comments are ignored, so an
+      # unfilled template section yields an empty string.
       #
-      # The source PR body is attacker-controllable, so it is read as DATA via
-      # the `context.payload` object — never interpolated into this script with
-      # `${{ }}` — which is the documented-safe pattern for `pull_request_target`.
+      # The PR body is attacker-controlled. Read it from `context.payload`, never
+      # through `${{ }}` in the script.
       - name: Extract Release notes section from source PR
         id: release-notes
         if: github.event_name == 'pull_request_target' || github.event_name == 'issue_comment'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            // On the comment path the PR body lives on `issue.body` (a PR is an
-            // issue); on the merge path it's on `pull_request.body`. The
-            // job-level `if:` guarantees one of these two events.
+            // A comment event carries the PR body on `issue`, a merge event on
+            // `pull_request`.
             const body = (context.eventName === 'issue_comment'
               ? context.payload.issue?.body
               : context.payload.pull_request?.body) || '';
@@ -178,32 +146,24 @@ jobs:
             const breakRe = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
             const fenceRe = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
-            // Mask HTML comments outside fenced code while preserving line
-            // boundaries. A literal `<!--` inside a fenced example is code,
-            // while a commented heading is not a rendered section.
+            // Blank out HTML comments outside fenced code, keeping line numbers
+            // intact. A `<!--` inside a fence is literal code.
             let inComment = false;
             let commentScanFence = null;
             let inlineCodeTicks = null;
             let maskInlineCode = false;
             const sourceLines = body.split(/\r?\n/);
-            // An ATX heading, list item, blockquote, fence, thematic break, or
-            // setext underline interrupts a paragraph in CommonMark, so inline
-            // parsing never reaches past one. A code span therefore cannot
-            // extend across a block start, and the scan below must stop there
-            // as well as at a blank line. Only `1.` and `1)` may interrupt, so
-            // other ordinals are excluded.
+            // In CommonMark a heading, list item, quote, fence, thematic break or
+            // setext underline ends a paragraph, so an inline code span can't cross
+            // one. The scan below stops at these block starts and at blank lines. Of
+            // the ordered list markers, only `1.` and `1)` can interrupt a paragraph.
             //
-            // The pattern is deliberately not exact: it also stops on empty
-            // markers (`*`, `1.` alone) and mixed runs (`-=-=`), and misses a
-            // spaced break (`_ _ _`). Masking is opt-in — a span opens only
-            // when a closing run is found — so stopping early means no span
-            // opens and text stays visible; the extra stops under-mask, and the
-            // missed one over-masks. Neither can change a verdict, because
-            // every landmark this gate reads (ATX headings, thematic breaks,
-            // `- [x]` checkboxes) is itself a paragraph interrupter and so can
-            // never sit inside an inline code span.
-            // moveit_pro's `test_block_start_regex_pins_actual_matches` records
-            // the full set against the copy in its `pr-description.yaml`.
+            // The regex is approximate. It also stops on empty markers and mixed runs
+            // like `-=-=`, and it misses a spaced break like `_ _ _`. Neither error
+            // changes the result, because every line this parser looks for is itself
+            // a block start and can't sit inside a code span. moveit_pro's
+            // `test_block_start_regex_pins_actual_matches` pins the exact matches for
+            // the copy in its `pr-description.yaml`.
             const blockStartRe = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-+*]|1[.)])(?:[ \t]|$)|`{3,}|~{3,}|(?:\*{3,}|_{3,})[ \t]*$|[-=]+[ \t]*$)/;
             const hasClosingBacktickRun = (lineIndex, offset, ticks) => {
               for (let i = lineIndex; i < sourceLines.length; i++) {
@@ -321,9 +281,9 @@ jobs:
               return visible;
             });
 
-            // Return true for every fence-marker line. An opening fence records
-            // its marker and length; only a matching run at least that long,
-            // followed by whitespace only, can close it (CommonMark semantics).
+            // Returns true for any fence marker line. A fence closes only on the same
+            // marker, at least as long as the opener, followed by nothing but
+            // whitespace.
             let fence = null;
             const updateFence = (line) => {
               const match = line.match(fenceRe);
@@ -343,10 +303,8 @@ jobs:
               return true;
             };
 
-            // 1. Locate the "Release notes" header, skipping fenced code blocks
-            //    (a `## Release notes` quoted inside a ``` fence is not real).
-            //    `.replace(/\s+#+\s*$/, '')` strips ATX closing hashes so
-            //    `## Release notes ##` still matches.
+            // 1. Find the Release notes heading outside fenced code. Closing hashes
+            //    are stripped so `## Release notes ##` matches.
             let start = -1;
             let level = 0;
             for (let i = 0; i < lines.length; i++) {
@@ -366,8 +324,8 @@ jobs:
               return;
             }
 
-            // 2. Collect the section body — fence-aware so a `---` or header
-            //    inside a code block doesn't terminate it early.
+            // 2. Collect the section. A `---` or heading inside a fence doesn't end
+            //    it.
             const collected = [];
             fence = null;
             for (let i = start + 1; i < lines.length; i++) {
@@ -380,8 +338,8 @@ jobs:
               collected.push(lines[i]);
             }
 
-            // 3. HTML comments were removed before parsing, so an unfilled
-            //    template placeholder yields an empty section.
+            // 3. HTML comments are already blanked, so an unfilled template section
+            //    is empty here.
             const cleaned = collected.join('\n');
             if (cleaned.trim() === '') {
               core.info('Release notes section is empty (unfilled template). Emitting nothing.');
@@ -389,35 +347,26 @@ jobs:
               return;
             }
 
-            // 4. Rebuild: header + tidied body (drop leading/trailing blank
-            //    runs, collapse 3+ newlines to a single blank line).
+            // 4. Trim blank lines at both ends and collapse runs of blank lines.
             let section = lines[start] + '\n\n'
               + cleaned.replace(/^\n+/, '').replace(/\s+$/, '').replace(/\n{3,}/g, '\n\n');
 
-            // 5. Neutralize GitHub issue-closure keywords (close/fix/resolve +
-            //    #N | GH-N | owner/repo#N) by backtick-quoting the keyword, so
-            //    merging the backport doesn't replay a `Closes #N` smuggled in
-            //    from the source PR's notes and close an unrelated issue.
+            // 5. Wrap closing keywords such as `Closes #N` in backticks, so merging
+            //    the backport can't close issues named in the source PR's notes.
             section = section.replace(
               /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+\/[\w.-]+)?#\d+|GH-\d+)/gi,
               (m, kw, sep, ref) => '`' + kw + '`' + sep + ref);
 
             core.setOutput('section', section);
 
-      # Join the action's default body, the caller's preamble, and the copied
-      # Release notes section with blank lines, dropping whichever parts are
-      # empty. Both values arrive through `env` rather than `${{ }}` in the
-      # script: the section comes from the attacker-controllable source PR
-      # body. The single-quoted `${pull_number}` / `${target_branch}` are the
-      # action's own placeholders, left literal for it to substitute.
+      # Join the default body, the caller's preamble and the copied section,
+      # skipping empty parts. Both values go through `env` because the section
+      # comes from the attacker-controlled PR body. `${pull_number}` and
+      # `${target_branch}` stay literal for the action to fill in.
       #
-      # The preamble precedes the copied section deliberately. The collector
-      # above runs to end-of-body while a fence is open, so a source PR whose
-      # Release notes section contains an unclosed fence yields a section that
-      # would swallow anything appended after it — stranding a backport that
-      # has `auto_merge_enabled` and no watcher. Leading also means a
-      # first-heading-wins check finds the preamble's sections rather than
-      # ones copied in from the source body.
+      # The preamble goes first. A section with an unclosed fence would swallow
+      # anything after it, and the auto-merging backport would then fail its
+      # PR-description check with nobody watching.
       - name: Compose backport PR description
         id: description
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -438,20 +387,17 @@ jobs:
         with:
           github_token: ${{ steps.app-token.outputs.token }}
           target_branches: ${{ steps.parse-comment.outputs.branch }}
-          # The action backports to the union of label matches and
-          # `target_branches`. On the comment path only the commented branch
-          # should run, not every `backport <branch>` label already on the PR,
-          # so an empty pattern turns label matching off there. The condition
-          # is written this way round because an empty string is falsy: in
-          # `cond && '' || pattern` the pattern would always win.
+          # The action backports to label matches plus `target_branches`. On the
+          # comment path only the named branch should run, so an empty pattern turns
+          # labels off. The condition is inverted because `cond && '' || x` always
+          # gives x.
           label_pattern: ${{ github.event_name != 'issue_comment' && '^backport ([^ ]+)$' || '' }}
           add_author_as_assignee: true
           add_labels: backport
-          # Pinned off rather than left to the action's default: a release
-          # milestone such as `10.1.1` belongs to its own series, and a
-          # milestone check on the target branch can reject it. Backports
-          # therefore arrive unmilestoned; set the target series' milestone by
-          # hand when one matters.
+          # Matches the action's default, set explicitly. A milestone such as
+          # `10.1.1` belongs to one release series, and a milestone check on the
+          # target branch can reject it. Set the target's milestone by hand when it
+          # matters.
           copy_milestone: false
           auto_merge_enabled: true
           copy_all_reviewers: true

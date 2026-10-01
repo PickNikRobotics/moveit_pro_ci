@@ -1,0 +1,405 @@
+name: Backport merged pull request
+
+# Reusable backport workflow for the MoveIt Pro repositories. The caller
+# declares the triggers:
+#
+#   on:
+#     pull_request_target:
+#       types: [closed]
+#     issue_comment:
+#       types: [created]
+#
+# A called workflow sees the caller's `github` context, so the job `if:` reads
+# the caller's event and git operations target the caller's repository.
+on:
+  workflow_call:
+    inputs:
+      description_preamble:
+        description: >
+          Markdown placed in the PR body between the "Backport of #N" line
+          and the copied Release notes section, for anything the caller's
+          PR-description check requires. The action fills in
+          `${pull_number}` and `${target_branch}` here too.
+        type: string
+        default: ""
+    secrets:
+      backport_app_client_id:
+        description: Client ID of the GitHub App that opens the backport PRs.
+        required: true
+      backport_app_private_key:
+        description: Private key of the GitHub App that opens the backport PRs.
+        required: true
+
+# Every write uses the App token from the `app-token` step, so
+# GITHUB_TOKEN stays read-only.
+permissions:
+  contents: read
+
+jobs:
+  backport:
+    name: Backport pull request
+    runs-on: ubuntu-latest
+
+    # Set on the job so skipped `issue_comment` runs don't enter the group.
+    concurrency:
+      group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+
+    # Runs for a merged PR with a `backport <branch>` label, or for a
+    # `/backport <branch>` comment on a merged PR. The trailing space keeps
+    # `/backporting` and similar from matching.
+    if: >
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.merged &&
+        contains(toJSON(github.event.pull_request.labels.*.name), '"backport ')
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        github.event.issue.pull_request.merged_at != null &&
+        startsWith(github.event.comment.body, '/backport ')
+      )
+
+    steps:
+      # GITHUB_TOKEN can't push changes under `.github/workflows/`, and a PR it
+      # opens triggers no workflows, so required checks never report and
+      # auto-merge waits forever. The App token avoids both.
+      #
+      # Mint it before checkout and pass it in. Checkout stores its token in
+      # `http.<url>.extraheader`, which git sends on every push, and a read-only
+      # GITHUB_TOKEN there gets the action's push rejected with a 403.
+      - name: Generate Token for backport
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.backport_app_client_id }}
+          private-key: ${{ secrets.backport_app_private_key }}
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      # The comment path has no label to read, so take the branch from the
+      # comment and pass it as `target_branches`. The label path skips this step.
+      #
+      # Anyone who can comment can post `/backport`, which on a public repo means
+      # any GitHub account. Applying a label needs triage access, so require write
+      # access here. A user with no access to the repo gets a 404, which counts as
+      # no access.
+      - name: Parse target branch from /backport comment
+        id: parse-comment
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const commenter = context.payload.comment.user.login;
+            let permission = 'none';
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: commenter,
+              });
+              permission = data.permission;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (!['admin', 'maintain', 'write'].includes(permission)) {
+              core.setFailed(`@${commenter} has '${permission}' access; /backport requires write access.`);
+              return;
+            }
+
+            // Use only the first word after `/backport `, so an explanation later
+            // in the comment isn't read as part of the branch name.
+            const match = context.payload.comment.body.match(/^\/backport\s+(\S+)/);
+            if (!match) {
+              core.setFailed('Expected `/backport <branch>` but found no target branch in the comment.');
+              return;
+            }
+            const branch = match[1];
+            core.info(`Parsed target branch from comment: ${branch}`);
+            core.setOutput('branch', branch);
+
+      # The action can copy the source PR's whole body but not one section, so
+      # extract the Release notes section here. It runs from its heading to the
+      # next heading of the same or higher level, or the next `---`. Headings and
+      # breaks inside fenced code don't count. HTML comments are ignored, so an
+      # unfilled template section yields an empty string.
+      #
+      # The PR body is attacker-controlled. Read it from `context.payload`, never
+      # through `${{ }}` in the script.
+      - name: Extract Release notes section from source PR
+        id: release-notes
+        if: github.event_name == 'pull_request_target' || github.event_name == 'issue_comment'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // A comment event carries the PR body on `issue`, a merge event on
+            // `pull_request`.
+            const body = (context.eventName === 'issue_comment'
+              ? context.payload.issue?.body
+              : context.payload.pull_request?.body) || '';
+
+            const headerRe = /^ {0,3}(#{1,6})\s+(.*?)\s*$/; // up to 3 leading spaces (CommonMark)
+            const breakRe = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
+            const fenceRe = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+            // Blank out HTML comments outside fenced code, keeping line numbers
+            // intact. A `<!--` inside a fence is literal code.
+            let inComment = false;
+            let commentScanFence = null;
+            let inlineCodeTicks = null;
+            let maskInlineCode = false;
+            const sourceLines = body.split(/\r?\n/);
+            // In CommonMark a heading, list item, quote, fence, thematic break or
+            // setext underline ends a paragraph, so an inline code span can't cross
+            // one. The scan below stops at these block starts and at blank lines. Of
+            // the ordered list markers, only `1.` and `1)` can interrupt a paragraph.
+            //
+            // The regex is approximate. It also stops on empty markers and mixed runs
+            // like `-=-=`, and it misses a spaced break like `_ _ _`. Neither error
+            // changes the result, because every line this parser looks for is itself
+            // a block start and can't sit inside a code span. moveit_pro's
+            // `test_block_start_regex_pins_actual_matches` pins the exact matches for
+            // the copy in its `pr-description.yaml`.
+            const blockStartRe = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-+*]|1[.)])(?:[ \t]|$)|`{3,}|~{3,}|(?:\*{3,}|_{3,})[ \t]*$|[-=]+[ \t]*$)/;
+            const hasClosingBacktickRun = (lineIndex, offset, ticks) => {
+              for (let i = lineIndex; i < sourceLines.length; i++) {
+                const candidate = sourceLines[i];
+                if (
+                  i > lineIndex
+                  && (candidate.trim() === '' || blockStartRe.test(candidate))
+                ) return false;
+                let j = i === lineIndex ? offset : 0;
+                while (j < candidate.length) {
+                  if (candidate[j] !== '`') { j++; continue; }
+                  let end = j + 1;
+                  while (candidate[end] === '`') end++;
+                  if (end - j === ticks) return true;
+                  j = end;
+                }
+              }
+              return false;
+            };
+            const lines = sourceLines.map((line, lineIndex) => {
+              if (!inComment && commentScanFence === null && line.trim() === '') {
+                inlineCodeTicks = null;
+                maskInlineCode = false;
+                return line;
+              }
+              const fenceMatch = line.match(fenceRe);
+              if (commentScanFence !== null) {
+                if (
+                  fenceMatch
+                  && fenceMatch[1][0] === commentScanFence.marker
+                  && fenceMatch[1].length >= commentScanFence.length
+                  && /^[ \t]*$/.test(fenceMatch[2])
+                ) {
+                  commentScanFence = null;
+                }
+                return line;
+              }
+              if (
+                !inComment
+                && fenceMatch
+                && !(fenceMatch[1][0] === '`' && fenceMatch[2].includes('`'))
+              ) {
+                commentScanFence = {
+                  marker: fenceMatch[1][0],
+                  length: fenceMatch[1].length,
+                };
+                return line;
+              }
+              if (!inComment && inlineCodeTicks === null && /^(?: {4}|\t)/.test(line)) {
+                return line;
+              }
+
+              let visible = '';
+              let offset = 0;
+              while (offset < line.length) {
+                if (inComment) {
+                  const end = line.indexOf('-->', offset);
+                  if (end === -1) return visible + ' '.repeat(line.length - offset);
+                  visible += ' '.repeat(end + 3 - offset);
+                  offset = end + 3;
+                  inComment = false;
+                } else {
+                  if (
+                    inlineCodeTicks !== null
+                    && line[offset] === '`'
+                  ) {
+                    let end = offset + 1;
+                    while (line[end] === '`') end++;
+                    const ticks = end - offset;
+                    const wasMasked = maskInlineCode;
+                    if (ticks === inlineCodeTicks) {
+                      inlineCodeTicks = null;
+                      maskInlineCode = false;
+                    }
+                    visible += wasMasked
+                      ? ' '.repeat(ticks)
+                      : line.slice(offset, end);
+                    offset = end;
+                  } else if (inlineCodeTicks !== null) {
+                    visible += maskInlineCode ? ' ' : line[offset];
+                    offset++;
+                  } else if (
+                    line[offset] === '\\'
+                    && offset + 1 < line.length
+                  ) {
+                    visible += line.slice(offset, offset + 2);
+                    offset += 2;
+                  } else if (line[offset] === '`') {
+                    let end = offset + 1;
+                    while (line[end] === '`') end++;
+                    const ticks = end - offset;
+                    if (
+                      hasClosingBacktickRun(lineIndex, end, ticks)
+                    ) {
+                      inlineCodeTicks = ticks;
+                      maskInlineCode = !line.slice(end).includes('`'.repeat(ticks));
+                    }
+                    visible += maskInlineCode
+                      ? ' '.repeat(ticks)
+                      : line.slice(offset, end);
+                    offset = end;
+                  } else if (
+                    inlineCodeTicks === null
+                    && line.startsWith('<!--', offset)
+                  ) {
+                    visible += ' '.repeat(4);
+                    offset += 4;
+                    inComment = true;
+                  } else {
+                    visible += line[offset];
+                    offset++;
+                  }
+                }
+              }
+              return visible;
+            });
+
+            // Returns true for any fence marker line. A fence closes only on the same
+            // marker, at least as long as the opener, followed by nothing but
+            // whitespace.
+            let fence = null;
+            const updateFence = (line) => {
+              const match = line.match(fenceRe);
+              if (!match) return false;
+              const marker = match[1][0];
+              const length = match[1].length;
+              if (fence === null) {
+                if (marker === '`' && match[2].includes('`')) return false;
+                fence = { marker, length };
+              } else if (
+                marker === fence.marker
+                && length >= fence.length
+                && /^[ \t]*$/.test(match[2])
+              ) {
+                fence = null;
+              }
+              return true;
+            };
+
+            // 1. Find the Release notes heading outside fenced code. Closing hashes
+            //    are stripped so `## Release notes ##` matches.
+            let start = -1;
+            let level = 0;
+            for (let i = 0; i < lines.length; i++) {
+              if (updateFence(lines[i])) continue;
+              if (fence !== null) continue;
+              const m = lines[i].match(headerRe);
+              if (m && m[2].replace(/\s+#+\s*$/, '').trim().toLowerCase() === 'release notes') {
+                start = i;
+                level = m[1].length;
+                break;
+              }
+            }
+
+            if (start === -1) {
+              core.info('No "Release notes" section found in the source PR description.');
+              core.setOutput('section', '');
+              return;
+            }
+
+            // 2. Collect the section. A `---` or heading inside a fence doesn't end
+            //    it.
+            const collected = [];
+            fence = null;
+            for (let i = start + 1; i < lines.length; i++) {
+              if (updateFence(lines[i])) { collected.push(lines[i]); continue; }
+              if (fence === null) {
+                const m = lines[i].match(headerRe);
+                if (m && m[1].length <= level) break; // next same/higher-level header
+                if (breakRe.test(lines[i])) break;    // thematic break (template separator)
+              }
+              collected.push(lines[i]);
+            }
+
+            // 3. HTML comments are already blanked, so an unfilled template section
+            //    is empty here.
+            const cleaned = collected.join('\n');
+            if (cleaned.trim() === '') {
+              core.info('Release notes section is empty (unfilled template). Emitting nothing.');
+              core.setOutput('section', '');
+              return;
+            }
+
+            // 4. Trim blank lines at both ends and collapse runs of blank lines.
+            let section = lines[start] + '\n\n'
+              + cleaned.replace(/^\n+/, '').replace(/\s+$/, '').replace(/\n{3,}/g, '\n\n');
+
+            // 5. Wrap closing keywords such as `Closes #N` in backticks, so merging
+            //    the backport can't close issues named in the source PR's notes.
+            section = section.replace(
+              /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+\/[\w.-]+)?#\d+|GH-\d+)/gi,
+              (m, kw, sep, ref) => '`' + kw + '`' + sep + ref);
+
+            core.setOutput('section', section);
+
+      # Join the default body, the caller's preamble and the copied section,
+      # skipping empty parts. Both values go through `env` because the section
+      # comes from the attacker-controlled PR body. `${pull_number}` and
+      # `${target_branch}` stay literal for the action to fill in.
+      #
+      # The preamble goes first. A section with an unclosed fence would swallow
+      # anything after it, and the auto-merging backport would then fail its
+      # PR-description check with nobody watching.
+      - name: Compose backport PR description
+        id: description
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PREAMBLE: ${{ inputs.description_preamble }}
+          SECTION: ${{ steps.release-notes.outputs.section }}
+        with:
+          script: |
+            const parts = [
+              '# Description\nBackport of #${pull_number} to `${target_branch}`.',
+              (process.env.PREAMBLE || '').trim(),
+              process.env.SECTION || '',
+            ];
+            core.setOutput('body', parts.filter((part) => part.trim() !== '').join('\n\n'));
+
+      - name: Create backport pull requests
+        uses: korthout/backport-action@2e830a1d0b8269505846ddd407a70876913ad1f8 # v4.6.0
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          target_branches: ${{ steps.parse-comment.outputs.branch }}
+          # The action backports to label matches plus `target_branches`. On the
+          # comment path only the named branch should run, so an empty pattern turns
+          # labels off. The condition is inverted because `cond && '' || x` always
+          # gives x.
+          label_pattern: ${{ github.event_name != 'issue_comment' && '^backport ([^ ]+)$' || '' }}
+          add_author_as_assignee: true
+          add_labels: backport
+          # Matches the action's default, set explicitly. A milestone such as
+          # `10.1.1` belongs to one release series, and a milestone check on the
+          # target branch can reject it. Set the target's milestone by hand when it
+          # matters.
+          copy_milestone: false
+          auto_merge_enabled: true
+          copy_all_reviewers: true
+          experimental: '{"conflict_resolution": "draft_commit_conflicts"}'
+          pull_description: ${{ steps.description.outputs.body }}

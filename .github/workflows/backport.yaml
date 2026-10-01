@@ -102,12 +102,37 @@ jobs:
       # it to the action via `target_branches`. Skipped for the label-triggered
       # `pull_request_target` path, where the action's default `label_pattern`
       # extracts the branch from the `backport <branch>` label name.
+      #
+      # Anyone who can comment on the PR can post `/backport`, which on a public
+      # caller is any GitHub account. The label path needs triage access, so
+      # require write access here before the App token pushes a branch. The
+      # legacy `permission` field folds `maintain` into `write`; it is listed
+      # anyway in case GitHub reports it directly. A commenter with no
+      # relationship to the repository may get a 404, which also rejects.
       - name: Parse target branch from /backport comment
         id: parse-comment
         if: github.event_name == 'issue_comment'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const commenter = context.payload.comment.user.login;
+            let permission = 'none';
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: commenter,
+              });
+              permission = data.permission;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (!['admin', 'maintain', 'write'].includes(permission)) {
+              core.setFailed(`@${commenter} has '${permission}' access; /backport requires write access.`);
+              return;
+            }
+
             // Take only the first token after `/backport ` so trailing text in the
             // same comment (e.g. an explanation) doesn't get fed in as part of the
             // branch name.
@@ -413,6 +438,13 @@ jobs:
         with:
           github_token: ${{ steps.app-token.outputs.token }}
           target_branches: ${{ steps.parse-comment.outputs.branch }}
+          # The action backports to the union of label matches and
+          # `target_branches`. On the comment path only the commented branch
+          # should run, not every `backport <branch>` label already on the PR,
+          # so an empty pattern turns label matching off there. The condition
+          # is written this way round because an empty string is falsy: in
+          # `cond && '' || pattern` the pattern would always win.
+          label_pattern: ${{ github.event_name != 'issue_comment' && '^backport ([^ ]+)$' || '' }}
           add_author_as_assignee: true
           add_labels: backport
           # Pinned off rather than left to the action's default: a release

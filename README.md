@@ -85,7 +85,14 @@ Inputs:
 - `description_preamble`: Markdown placed in the generated PR body between the `Backport of #N` line and the copied Release notes section. Use it for sections your PR-description check requires. Default: `""`.
 
 Required secrets:
-- `backport_app_client_id` and `backport_app_private_key`: credentials of the GitHub App that opens the PRs. A PR opened with the default `GITHUB_TOKEN` does not trigger other workflows, so its required checks would never report. The App token is also what lets a backport push changes under `.github/workflows/`.
+- `backport_app_client_id` and `backport_app_private_key`: credentials of the GitHub App that opens the PRs. A PR opened with the default `GITHUB_TOKEN` does not trigger other workflows, so its required checks would never report. Install the App on the calling repository with these repository permissions:
+  - Contents: write, to push the backport branch.
+  - Pull requests: write, to open the PR and enable auto-merge.
+  - Issues: write, to add labels and assignees and to post result comments.
+  - Workflows: write. Without it, a backport that touches `.github/workflows/` fails to push.
+  - Metadata: read (granted to every App). The `/backport` comment path uses it to check that the commenter has write access.
+
+Only a commenter with write access can trigger a backport with `/backport <branch>`. A comment-triggered run backports to that one branch and ignores any `backport <branch>` labels already on the PR.
 
 ## Reusable Actions
 

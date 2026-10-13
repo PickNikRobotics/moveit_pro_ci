@@ -94,6 +94,8 @@ Required secrets:
 
 Only a commenter with write access can trigger a backport with `/backport <branch>`. A comment-triggered run backports to that one branch and ignores any `backport <branch>` labels already on the PR.
 
+Merge commits on the source PR are skipped, so a PR whose branch was updated by merging its base still backports. Only the non-merge commits are cherry-picked. A conflict fix made inside a skipped merge is not carried over, and commits merged in from a branch other than the base are still picked.
+
 ## Reusable Actions
 
 ### `find_release_branch`

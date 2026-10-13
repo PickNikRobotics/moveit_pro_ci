@@ -401,5 +401,10 @@ jobs:
           copy_milestone: false
           auto_merge_enabled: true
           copy_all_reviewers: true
+          # The default `fail` refuses any PR whose branch was updated by merging
+          # its base. `skip` drops the merge commits and cherry-picks the rest. A
+          # conflict fix made inside a skipped merge is not carried over, and
+          # commits merged in from a branch other than the base are still picked.
+          merge_commits: skip
           experimental: '{"conflict_resolution": "draft_commit_conflicts"}'
           pull_description: ${{ steps.description.outputs.body }}

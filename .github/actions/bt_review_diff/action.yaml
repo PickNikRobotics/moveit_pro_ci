@@ -1,0 +1,36 @@
+name: 'Behavior Tree review diff'
+description: 'Annotate a pull request with the structural Behavior Tree XML changes: added or removed nodes, wrappers, moves, reorders, and attribute edits.'
+inputs:
+  base:
+    description: 'Base commit. Defaults to the pull request base.'
+    default: ${{ github.event.pull_request.base.sha }}
+  head:
+    description: 'Head commit. Defaults to the pull request head.'
+    default: ${{ github.event.pull_request.head.sha }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Diff Behavior Tree XML
+      shell: bash
+      env:
+        BASE_SHA: ${{ inputs.base }}
+        HEAD_SHA: ${{ inputs.head }}
+        ACTION_PATH: ${{ github.action_path }}
+        FILE_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ inputs.head }}
+        PR_URL: ${{ github.event.pull_request.html_url }}
+      run: |
+        set -euo pipefail
+        if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+          echo "::error title=Behavior Tree review diff::No base or head commit. Run on a pull_request event or set the base and head inputs."
+          exit 1
+        fi
+        for sha in "$BASE_SHA" "$HEAD_SHA"; do
+          git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$sha"
+        done
+        python3 -m venv "$RUNNER_TEMP/bt_review_diff"
+        "$RUNNER_TEMP/bt_review_diff/bin/pip" install --quiet --disable-pip-version-check -r "$ACTION_PATH/requirements.txt"
+        "$RUNNER_TEMP/bt_review_diff/bin/python" "$ACTION_PATH/bt_review_diff.py" \
+          --base "$BASE_SHA" --head "$HEAD_SHA" \
+          --report "$GITHUB_STEP_SUMMARY" --file-url "$FILE_URL" \
+          ${PR_URL:+--whitespace-url "$PR_URL/files?w=1"}

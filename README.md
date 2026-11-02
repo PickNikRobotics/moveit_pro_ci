@@ -108,3 +108,39 @@ Composite action that lists the calling repository's branches and outputs the hi
   run: echo "Release branch is ${{ steps.get_current_release_branch.outputs.branch }}"
 ```
 Pin by commit SHA for reproducibility.
+
+### `bt_review_diff`
+Composite action that reviews Behavior Tree XML changes by structure instead of by line. GitHub's line diff shows a block that gained a wrapper node as a full delete and re-add. This action matches nodes between the pull request's base and head with [xmldiff](https://github.com/Shoobx/xmldiff) and reports only what changed:
+
+- added and removed nodes, one line per added or removed subtree, naming the existing nodes a new wrapper wraps or a removed wrapper unwraps
+- nodes moved to a different parent, and reordered children
+- attribute and text edits
+
+Two nodes match only when they have the same tag and `ID`, and nodes without an `ID`, such as ports, also need the same `name`. Replacing a Behavior therefore reads as a remove and an add. Leaf nodes are first paired in document order, the way a line diff pairs lines, preferring leaves that did not change, so look-alike siblings keep their order and a swap reads as one reorder. The remaining nodes pair by attribute and child similarity, and the candidate in the same place in the tree wins a tie. Comments and formatting are ignored. A file with more than 1500 nodes is skipped with a warning, because matching cost grows with the square of the node count.
+
+Each change becomes a notice annotation on its line in the pull request's Files changed view, capped at 10 per run. The job summary lists every change with a link to its line, and a link to the line diff with whitespace hidden. The action never fails a pull request over what it finds. It skips XML files that are not Behavior Trees, and added or deleted files. A Behavior Tree file that no longer parses gets a warning annotation, and the other files are still diffed.
+
+```yaml
+name: Behavior Tree review diff
+
+on:
+  pull_request:
+    paths:
+      - '**.xml'
+
+permissions:
+  contents: read
+
+jobs:
+  bt-review-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: PickNikRobotics/moveit_pro_ci/.github/actions/bt_review_diff@<commit-sha>
+```
+
+To run it locally, from a workspace checkout:
+```bash
+uv run --with-requirements <moveit_pro_ci>/.github/actions/bt_review_diff/requirements.txt \
+  python3 <moveit_pro_ci>/.github/actions/bt_review_diff/bt_review_diff.py --base origin/main --head HEAD
+```

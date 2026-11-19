@@ -31,6 +31,12 @@ on:
           App secrets and use it for recursive checkout of private submodules.
         type: boolean
         default: false
+      github_app_checkout_repositories:
+        description: >
+          Comma or newline-separated repositories to include in the installation
+          token. Leave empty to use every repository available to the App installation.
+        type: string
+        default: ""
       enable_gpu:
         description: >
           If true, pass `--gpus all` to the studio container so workloads inside
@@ -177,6 +183,7 @@ jobs:
           app-id: ${{ secrets.checkout_app_id }}
           private-key: ${{ secrets.checkout_app_private_key }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.github_app_checkout_repositories }}
           permission-contents: read
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -46,7 +46,7 @@ All input args:
 
 Required secrets:
 - `moveit_license_key`: The MoveIt Pro license key. Passing `secrets: inherit` (as in the examples above) is the easiest way to forward it from the calling workflow.
-- `checkout_app_id` and `checkout_app_private_key` (optional): GitHub App credentials used when `use_github_app_checkout` is true. Install the App on the calling repository and every private submodule repository it must read.
+- `checkout_app_id` and `checkout_app_private_key` (optional): GitHub App credentials used when `use_github_app_checkout` is true. Install the App on the calling repository and every private submodule repository it must read. The generated installation token requests read-only repository contents even if the App permits writes.
 - `lfs_cache_role_arn` (optional): AWS IAM role ARN to assume via GitHub OIDC for read/write access to `lfs_cache_s3_bucket`. Only needed when `lfs_cache_s3_bucket` is set; passed as a secret so the ARN does not appear in run logs.
 
 ## Supported ROS Distributions

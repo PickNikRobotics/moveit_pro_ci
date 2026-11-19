@@ -36,6 +36,7 @@ All input args:
 - `colcon_test_args`: Additional colcon arguments to pass to the `colcon test` command. Default: `""`.
 - `runner`: A runner to be passed and run the integration tests. Default: `studio_16_core_runner`.
 - `use_ccache`: If `true`, use ccache to speed up the colcon build. The ccache directory is restored from and saved to the GitHub Actions cache (keyed by image tag, ROS distro, and config package), and `CMAKE_{C,CXX}_COMPILER_LAUNCHER` is set to `ccache` for the build step. Default: `false`.
+- `use_github_app_checkout`: If `true`, generate a GitHub App installation token for recursive checkout of private submodules. Requires the `checkout_app_id` and `checkout_app_private_key` secrets. Default: `false`.
 - `enable_gpu`: If `true`, pass `--gpus all` to the studio container so workloads inside it can access NVIDIA hardware (CUDA inference, GPU-accelerated simulation, etc.). The caller is responsible for routing the job to a GPU-equipped runner; setting `enable_gpu: true` on a runner with no GPU exposed will fail at container start with `could not select device driver "" with capabilities: [[gpu]]`. Default: `false`.
 - `image_ref`: Full container image reference template that overrides the default Docker Hub `picknikciuser/moveit-studio:<image_tag>-<ros_distro>`. Used by sister repos that need to pull a PR-built private GHCR image via `repository_dispatch`. Uses Python-style `format()` semantics: `{0}` is substituted with the matrix ROS distro at job start, so one input covers every distro the matrix expands over. Example: `ghcr.io/picknikrobotics/moveit-studio:my-branch-{0}-amd64`. Default: `""` (use Docker Hub via `image_tag`).
 - `git_ref`: Git git_ref (branch, tag, or SHA) for the caller's repository to check out. Defaults to empty, which lets `actions/checkout` use the triggering ref (correct for `pull_request` and `push`). Set this when triggered by `repository_dispatch` and the caller needs to run against a specific paired branch carried in the dispatch payload (e.g., `v9.3`). Default: `""`.
@@ -45,6 +46,7 @@ All input args:
 
 Required secrets:
 - `moveit_license_key`: The MoveIt Pro license key. Passing `secrets: inherit` (as in the examples above) is the easiest way to forward it from the calling workflow.
+- `checkout_app_id` and `checkout_app_private_key` (optional): GitHub App credentials used when `use_github_app_checkout` is true. Install the App on the calling repository and every private submodule repository it must read.
 - `lfs_cache_role_arn` (optional): AWS IAM role ARN to assume via GitHub OIDC for read/write access to `lfs_cache_s3_bucket`. Only needed when `lfs_cache_s3_bucket` is set; passed as a secret so the ARN does not appear in run logs.
 
 ## Supported ROS Distributions

@@ -33,8 +33,10 @@ on:
         default: false
       github_app_checkout_repositories:
         description: >
-          Comma or newline-separated repositories to include in the installation
-          token. Leave empty to use every repository available to the App installation.
+          Comma or newline-separated repository names under github.repository_owner
+          to include in the installation token. Do not use owner/repository names;
+          private submodules owned by another organization cannot be selected.
+          Leave empty to use every repository available to the App installation.
         type: string
         default: ""
       enable_gpu:

@@ -25,6 +25,20 @@ on:
           `CMAKE_{C,CXX}_COMPILER_LAUNCHER` is set to `ccache` for the build step.
         type: boolean
         default: false
+      use_github_app_checkout:
+        description: >
+          If true, generate a GitHub App installation token from the checkout
+          App secrets and use it for recursive checkout of private submodules.
+        type: boolean
+        default: false
+      github_app_checkout_repositories:
+        description: >
+          Comma or newline-separated repository names under github.repository_owner
+          to include in the installation token. Do not use owner/repository names;
+          private submodules owned by another organization cannot be selected.
+          Leave empty to use every repository available to the App installation.
+        type: string
+        default: ""
       enable_gpu:
         description: >
           If true, pass `--gpus all` to the studio container so workloads inside
@@ -87,6 +101,12 @@ on:
     secrets:
       moveit_license_key:
         required: true
+      checkout_app_id:
+        description: GitHub App ID used when use_github_app_checkout is true.
+        required: false
+      checkout_app_private_key:
+        description: GitHub App private key used when use_github_app_checkout is true.
+        required: false
       lfs_cache_role_arn:
         description: >
           AWS IAM role ARN to assume via GitHub OIDC for read/write access to
@@ -157,11 +177,23 @@ jobs:
         id: set_user_ws
         run: echo "USER_WS=/__w/$(basename ${{ github.repository }})/$(basename ${{ github.repository }})" >> $GITHUB_ENV
 
+      - name: Generate checkout token
+        if: ${{ inputs.use_github_app_checkout }}
+        id: checkout-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.checkout_app_id }}
+          private-key: ${{ secrets.checkout_app_private_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.github_app_checkout_repositories }}
+          permission-contents: read
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Empty ``ref`` falls back to the default (triggering ref).
           ref: ${{ inputs.git_ref }}
           submodules: recursive
+          token: ${{ inputs.use_github_app_checkout && steps.checkout-app-token.outputs.token || github.token }}
           # Direct LFS pull only when fetching LFS and not using the S3 cache.
           lfs: ${{ inputs.fetch_lfs && inputs.lfs_cache_s3_bucket == '' }}
 
